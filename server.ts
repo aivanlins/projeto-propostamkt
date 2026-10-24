@@ -1,0 +1,857 @@
+import express from 'express';
+import cors from 'cors';
+import mysql from 'mysql2/promise';
+import dotenv from 'dotenv';
+import path from 'path';
+import fs from 'fs';
+import { fileURLToPath } from 'url';
+import bcrypt from 'bcryptjs';
+
+dotenv.config();
+
+const app = express();
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const LOCK_FILE = path.join(__dirname, 'installed.lock');
+const DB_CONFIG_FILE = path.join(__dirname, 'db-config.json');
+
+app.use(cors());
+app.use(express.json({ limit: '50mb' }));
+
+// Helper para obter credenciais do banco de dados (prioriza arquivo salvo na instalação)
+function getDbConfig() {
+  if (fs.existsSync(DB_CONFIG_FILE)) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(DB_CONFIG_FILE, 'utf-8'));
+      if (parsed && parsed.database) return parsed;
+    } catch (e) {
+      console.error('Erro ao ler db-config.json:', e);
+    }
+  }
+
+  if (process.env.DB_NAME) {
+    return {
+      host: process.env.DB_HOST || 'localhost',
+      port: parseInt(process.env.DB_PORT || '3306', 10),
+      user: process.env.DB_USER || 'root',
+      password: process.env.DB_PASSWORD || '',
+      database: process.env.DB_NAME,
+    };
+  }
+
+  return null;
+}
+
+async function getDbConnection() {
+  const config = getDbConfig();
+  if (!config) throw new Error('Banco de dados não configurado. Conclua a instalação.');
+  return await mysql.createConnection({
+    ...config,
+    multipleStatements: true,
+  });
+}
+
+// ==========================================
+// 1. ENDPOINT DE DIAGNÓSTICO /api/check-db
+// ==========================================
+app.get('/api/check-db', async (req, res) => {
+  try {
+    const config = getDbConfig();
+    if (!config) {
+      return res.status(200).json({
+        conectado: false,
+        instalado: fs.existsSync(LOCK_FILE),
+        mensagem: 'Nenhum arquivo db-config.json ou variável de ambiente encontrada.',
+        tabelas: {}
+      });
+    }
+
+    const conn = await mysql.createConnection(config);
+
+    // Lista de tabelas esperadas
+    const tabelasEsperadas = ['configuracao_fixa', 'usuarios', 'propostas', 'modelos_propostas', 'logs_auditoria'];
+    const resultadoTabelas: Record<string, { existe: boolean; registros: number }> = {};
+
+    for (const tab of tabelasEsperadas) {
+      try {
+        const [rows]: any = await conn.query(`SELECT COUNT(*) as total FROM \`${tab}\``);
+        resultadoTabelas[tab] = { existe: true, registros: rows[0]?.total || 0 };
+      } catch (err) {
+        resultadoTabelas[tab] = { existe: false, registros: 0 };
+      }
+    }
+
+    // Busca detalhes do primeiro admin se existir
+    let adminInfo = null;
+    try {
+      const [adminRows]: any = await conn.query('SELECT id, nome, email, papel, criado_em FROM usuarios WHERE papel = "admin" LIMIT 1');
+      if (adminRows && adminRows.length > 0) {
+        adminInfo = adminRows[0];
+      }
+    } catch (e) {}
+
+    await conn.end();
+
+    const configuracaoOk = (resultadoTabelas['configuracao_fixa']?.registros || 0) > 0;
+    const usuariosOk = (resultadoTabelas['usuarios']?.registros || 0) > 0;
+
+    return res.json({
+      conectado: true,
+      instalado: fs.existsSync(LOCK_FILE),
+      bancoNome: config.database,
+      servidor: `${config.host}:${config.port || 3306}`,
+      usuarioDb: config.user,
+      configuracaoOk,
+      usuariosOk,
+      adminInfo,
+      tabelas: resultadoTabelas,
+      statusGeral: configuracaoOk && usuariosOk ? 'PRONTO_PARA_USO' : 'PENDENTE_DADOS'
+    });
+  } catch (err: any) {
+    return res.status(200).json({
+      conectado: false,
+      instalado: fs.existsSync(LOCK_FILE),
+      erro: err.message || 'Falha ao conectar no MySQL',
+      tabelas: {}
+    });
+  }
+});
+
+// ==========================================
+// 2. ROTAS DE INSTALAÇÃO DO SISTEMA
+// ==========================================
+
+// Testar conexão MySQL
+app.post('/api/install/test-db', async (req, res) => {
+  const { host, port, user, password, database } = req.body;
+  try {
+    const connection = await mysql.createConnection({
+      host: host || 'localhost',
+      port: parseInt(port, 10) || 3306,
+      user,
+      password,
+      database
+    });
+    await connection.end();
+    res.json({ success: true, message: 'Conexão estabelecida com sucesso com o servidor MySQL!' });
+  } catch (err: any) {
+    console.error('Erro no test-db:', err);
+    res.status(500).json({ error: err.message || 'Falha ao conectar no MySQL.' });
+  }
+});
+
+// Criar todas as tabelas necessárias no MySQL
+app.post('/api/install/create-tables', async (req, res) => {
+  const { host, port, user, password, database } = req.body;
+  try {
+    const dbParams = {
+      host: host || 'localhost',
+      port: parseInt(port, 10) || 3306,
+      user,
+      password,
+      database,
+      multipleStatements: true
+    };
+
+    const connection = await mysql.createConnection(dbParams);
+
+    // Salvar arquivo de credenciais permanentemente
+    fs.writeFileSync(DB_CONFIG_FILE, JSON.stringify(dbParams, null, 2));
+
+    const schema = `
+      CREATE TABLE IF NOT EXISTS configuracao_fixa (
+        id VARCHAR(50) PRIMARY KEY,
+        nome_agencia VARCHAR(255) DEFAULT 'Minha Agência',
+        email_contato VARCHAR(255) DEFAULT '',
+        telefone_whatsapp VARCHAR(50) DEFAULT '',
+        dados_json LONGTEXT,
+        atualizado_em VARCHAR(50)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+      CREATE TABLE IF NOT EXISTS usuarios (
+        id VARCHAR(50) PRIMARY KEY,
+        nome VARCHAR(255) NOT NULL,
+        email VARCHAR(255) NOT NULL UNIQUE,
+        senha VARCHAR(255) NOT NULL,
+        whatsapp VARCHAR(50) DEFAULT '',
+        cargo VARCHAR(255) DEFAULT 'Consultor Comercial',
+        foto_url TEXT,
+        slug VARCHAR(255) DEFAULT '',
+        papel VARCHAR(50) DEFAULT 'admin',
+        status VARCHAR(50) DEFAULT 'ativo',
+        ultimo_login VARCHAR(50),
+        pode_criar_secoes TINYINT(1) DEFAULT 1,
+        criado_em VARCHAR(50)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+      CREATE TABLE IF NOT EXISTS propostas (
+        id VARCHAR(50) PRIMARY KEY,
+        token VARCHAR(100) NOT NULL UNIQUE,
+        cliente_nome VARCHAR(255) NOT NULL,
+        cliente_empresa VARCHAR(255) DEFAULT '',
+        titulo VARCHAR(255) NOT NULL,
+        status VARCHAR(50) DEFAULT 'ativo',
+        valor_total DECIMAL(10,2) DEFAULT 0.00,
+        criado_por_id VARCHAR(50),
+        criado_por_nome VARCHAR(255),
+        dados_json LONGTEXT,
+        criado_em VARCHAR(50),
+        atualizado_em VARCHAR(50)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+      CREATE TABLE IF NOT EXISTS modelos_propostas (
+        id VARCHAR(50) PRIMARY KEY,
+        titulo VARCHAR(255) NOT NULL,
+        descricao TEXT,
+        categoria VARCHAR(100) DEFAULT 'Geral',
+        dados_json LONGTEXT,
+        criado_em VARCHAR(50)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+      CREATE TABLE IF NOT EXISTS logs_auditoria (
+        id VARCHAR(50) PRIMARY KEY,
+        proposta_id VARCHAR(50),
+        proposta_titulo VARCHAR(255),
+        usuario_id VARCHAR(50),
+        usuario_nome VARCHAR(255) DEFAULT 'Sistema',
+        acao VARCHAR(50) NOT NULL,
+        detalhes TEXT,
+        ip VARCHAR(50) DEFAULT '127.0.0.1',
+        user_agent TEXT,
+        status_seguranca VARCHAR(50) DEFAULT 'OK',
+        data_hora VARCHAR(50)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `;
+    await connection.query(schema);
+
+    // Insere linha padrão em configuracao_fixa caso não exista
+    await connection.query(
+      `INSERT IGNORE INTO configuracao_fixa (id, nome_agencia, email_contato, telefone_whatsapp, atualizado_em) 
+       VALUES ('cfg_principal', 'Minha Agência', 'contato@suaagencia.com.br', '', ?)`,
+      [new Date().toISOString()]
+    );
+
+    // Registra log da criação de tabelas
+    await connection.query(
+      `INSERT INTO logs_auditoria (id, usuario_nome, acao, detalhes, data_hora) 
+       VALUES (?, 'Instalador Automático', 'CRIACAO', 'Tabelas do sistema estruturadas no MySQL com sucesso.', ?)`,
+      [`log_${Date.now()}`, new Date().toISOString()]
+    );
+
+    await connection.end();
+    res.json({ success: true, message: 'Estrutura de tabelas criada com sucesso no MySQL!' });
+  } catch (err: any) {
+    console.error('Erro no create-tables:', err);
+    res.status(500).json({ error: err.message || 'Falha ao criar tabelas no MySQL' });
+  }
+});
+
+// Cadastrar Super Administrador e finalizar instalação
+app.post('/api/install/create-admin', async (req, res) => {
+  const { host, port, user, password, database, name, email, adminPassword } = req.body;
+  try {
+    let dbConfig = null;
+    if (database && user) {
+      dbConfig = {
+        host: host || 'localhost',
+        port: parseInt(port, 10) || 3306,
+        user,
+        password,
+        database
+      };
+      fs.writeFileSync(DB_CONFIG_FILE, JSON.stringify(dbConfig, null, 2));
+    } else {
+      dbConfig = getDbConfig();
+    }
+
+    if (!dbConfig) {
+      return res.status(500).json({ error: 'Configurações de conexão do MySQL não encontradas.' });
+    }
+
+    const connection = await mysql.createConnection(dbConfig);
+    const hashedPassword = await bcrypt.hash(adminPassword, 10);
+    const agora = new Date().toISOString();
+
+    // Insere ou atualiza o administrador com privilégios completos
+    await connection.query(
+      `INSERT INTO usuarios (id, nome, email, senha, papel, status, pode_criar_secoes, cargo, criado_em) 
+       VALUES ('usr_admin', ?, ?, ?, 'admin', 'ativo', 1, 'Diretor Geral', ?)
+       ON DUPLICATE KEY UPDATE nome = VALUES(nome), senha = VALUES(senha), papel = 'admin', status = 'ativo'`,
+      [name || 'Administrador Geral', email, hashedPassword, agora]
+    );
+
+    // Registra log de instalação
+    await connection.query(
+      `INSERT INTO logs_auditoria (id, usuario_nome, acao, detalhes, data_hora) 
+       VALUES (?, ?, 'CRIACAO', 'Instalação do sistema finalizada. Super Administrador ativado.', ?)`,
+      [`log_${Date.now()}`, name || 'Super Admin', agora]
+    );
+
+    await connection.end();
+
+    // Cria a trava de segurança installed.lock
+    fs.writeFileSync(LOCK_FILE, JSON.stringify({
+      instaladoEm: agora,
+      adminEmail: email,
+      adminNome: name
+    }, null, 2));
+
+    res.json({ success: true, message: 'Super Administrador cadastrado e instalado com sucesso!' });
+  } catch (err: any) {
+    console.error('Erro no create-admin:', err);
+    res.status(500).json({ error: err.message || 'Falha ao cadastrar o administrador.' });
+  }
+});
+
+// ==========================================
+// 3. ROTAS DE AUTENTICAÇÃO
+// ==========================================
+
+app.post('/api/login', async (req, res) => {
+  const { email, senha } = req.body;
+  try {
+    const dbConfig = getDbConfig();
+    if (!dbConfig) {
+      return res.status(500).json({ 
+        error: 'Configuração do banco de dados não encontrada no servidor. Conclua a instalação primeiro.',
+        reinstalar: true 
+      });
+    }
+
+    const connection = await mysql.createConnection(dbConfig);
+    const [rows]: any = await connection.query('SELECT * FROM usuarios WHERE email = ?', [email]);
+
+    if (!rows || rows.length === 0) {
+      const [countRows]: any = await connection.query('SELECT COUNT(*) as total FROM usuarios');
+      const total = countRows[0]?.total || 0;
+
+      // Se a tabela estiver vazia, registra tentativa e avisa
+      if (total === 0) {
+        await connection.end();
+        return res.status(401).json({
+          error: 'A tabela de usuários está vazia. O administrador não foi inserido no banco de dados.',
+          reinstalar: true
+        });
+      }
+
+      // Log de falha de login
+      await connection.query(
+        `INSERT INTO logs_auditoria (id, usuario_nome, acao, detalhes, status_seguranca, data_hora) 
+         VALUES (?, ?, 'VISUALIZACAO', 'Tentativa de login com e-mail inexistente.', 'ALERTA', ?)`,
+        [`log_${Date.now()}`, email, new Date().toISOString()]
+      );
+      await connection.end();
+
+      return res.status(401).json({ error: 'E-mail não encontrado no banco de dados.' });
+    }
+
+    const user = rows[0];
+
+    // Validação com bcrypt (com fallback caso senha em texto plano)
+    let senhaValida = false;
+    if (user.senha && (user.senha.startsWith('$2a$') || user.senha.startsWith('$2b$') || user.senha.startsWith('$2y$'))) {
+      senhaValida = await bcrypt.compare(senha, user.senha);
+    } else {
+      senhaValida = user.senha === senha;
+    }
+
+    const agora = new Date().toISOString();
+
+    if (!senhaValida) {
+      await connection.query(
+        `INSERT INTO logs_auditoria (id, usuario_id, usuario_nome, acao, detalhes, status_seguranca, data_hora) 
+         VALUES (?, ?, ?, 'VISUALIZACAO', 'Tentativa de login com senha incorreta.', 'ALERTA', ?)`,
+        [`log_${Date.now()}`, user.id, user.nome, agora]
+      );
+      await connection.end();
+      return res.status(401).json({ error: 'Senha incorreta.' });
+    }
+
+    if (user.status === 'bloqueado') {
+      await connection.end();
+      return res.status(403).json({ error: 'Conta de usuário desativada pelo administrador.' });
+    }
+
+    // Atualiza data do último login e registra log
+    await connection.query('UPDATE usuarios SET ultimo_login = ? WHERE id = ?', [agora, user.id]);
+    await connection.query(
+      `INSERT INTO logs_auditoria (id, usuario_id, usuario_nome, acao, detalhes, data_hora) 
+       VALUES (?, ?, ?, 'ATIVACAO', 'Login bem-sucedido no painel de gestão.', ?)`,
+      [`log_${Date.now()}`, user.id, user.nome, agora]
+    );
+
+    await connection.end();
+
+    const { senha: _, ...userSafe } = user;
+    return res.json({
+      success: true,
+      usuario: {
+        id: userSafe.id || 'usr_admin',
+        nome: userSafe.nome,
+        email: userSafe.email,
+        whatsapp: userSafe.whatsapp || '',
+        cargo: userSafe.cargo || 'Administrador',
+        slug: userSafe.slug || 'admin',
+        papel: userSafe.papel || 'admin',
+        status: userSafe.status || 'ativo',
+        podeCriarSecoes: userSafe.pode_criar_secoes === 1 || userSafe.pode_criar_secoes === true,
+      }
+    });
+  } catch (err: any) {
+    console.error('Erro na rota /api/login:', err);
+    return res.status(500).json({ error: 'Erro de comunicação com o MySQL: ' + (err.message || 'Falha de conexão') });
+  }
+});
+
+// Resetar instalação
+app.post('/api/reset-install', (req, res) => {
+  try {
+    if (fs.existsSync(LOCK_FILE)) fs.unlinkSync(LOCK_FILE);
+    if (fs.existsSync(DB_CONFIG_FILE)) fs.unlinkSync(DB_CONFIG_FILE);
+    res.json({ success: true, message: 'Instalação reiniciada. Travas removidas.' });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Status geral
+app.get('/api/status', (req, res) => {
+  res.json({ instalado: fs.existsSync(LOCK_FILE) });
+});
+
+// ==========================================
+// 4. ROTAS DE DADOS PERSISTENTES (CONFIG, PROPOSTAS, LOGS, USUARIOS)
+// ==========================================
+
+// Configuração da Agência
+app.get('/api/config', async (req, res) => {
+  try {
+    const conn = await getDbConnection();
+    const [rows]: any = await conn.query('SELECT dados_json, nome_agencia, email_contato, telefone_whatsapp FROM configuracao_fixa LIMIT 1');
+    await conn.end();
+
+    if (rows && rows.length > 0 && rows[0].dados_json) {
+      try {
+        return res.json(JSON.parse(rows[0].dados_json));
+      } catch (e) {}
+    }
+    return res.json(null);
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/config', async (req, res) => {
+  try {
+    const novaConfig = req.body;
+    const conn = await getDbConnection();
+    const agora = new Date().toISOString();
+    const jsonStr = JSON.stringify(novaConfig);
+
+    await conn.query(
+      `INSERT INTO configuracao_fixa (id, nome_agencia, email_contato, telefone_whatsapp, dados_json, atualizado_em) 
+       VALUES ('cfg_principal', ?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE 
+         nome_agencia = VALUES(nome_agencia),
+         email_contato = VALUES(email_contato),
+         telefone_whatsapp = VALUES(telefone_whatsapp),
+         dados_json = VALUES(dados_json),
+         atualizado_em = VALUES(atualizado_em)`,
+      [
+        novaConfig.nomeAgencia || 'Minha Agência',
+        novaConfig.emailContato || '',
+        novaConfig.telefoneWhatsapp || '',
+        jsonStr,
+        agora
+      ]
+    );
+
+    await conn.query(
+      `INSERT INTO logs_auditoria (id, usuario_nome, acao, detalhes, data_hora) 
+       VALUES (?, 'Admin', 'EDICAO', 'Configurações e identidade visual da agência atualizadas no banco.', ?)`,
+      [`log_${Date.now()}`, agora]
+    );
+
+    await conn.end();
+    return res.json({ success: true });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Propostas Comerciais (CRUD completo)
+app.get('/api/propostas', async (req, res) => {
+  try {
+    const conn = await getDbConnection();
+    const [rows]: any = await conn.query('SELECT dados_json FROM propostas ORDER BY atualizado_em DESC');
+    await conn.end();
+
+    const propostas = (rows || []).map((r: any) => {
+      try {
+        return JSON.parse(r.dados_json);
+      } catch (e) {
+        return null;
+      }
+    }).filter(Boolean);
+
+    return res.json(propostas);
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/propostas', async (req, res) => {
+  try {
+    const proposta = req.body;
+    const conn = await getDbConnection();
+    const agora = new Date().toISOString();
+    const jsonStr = JSON.stringify(proposta);
+
+    await conn.query(
+      `INSERT INTO propostas (id, token, cliente_nome, cliente_empresa, titulo, status, valor_total, criado_por_id, criado_por_nome, dados_json, criado_em, atualizado_em) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE 
+         cliente_nome = VALUES(cliente_nome),
+         cliente_empresa = VALUES(cliente_empresa),
+         titulo = VALUES(titulo),
+         status = VALUES(status),
+         valor_total = VALUES(valor_total),
+         dados_json = VALUES(dados_json),
+         atualizado_em = VALUES(atualizado_em)`,
+      [
+        proposta.id,
+        proposta.token,
+        proposta.clienteNome || 'Cliente',
+        proposta.clienteEmpresa || '',
+        proposta.titulo || 'Proposta Comercial',
+        proposta.status || 'ativo',
+        proposta.valorTotal || 0,
+        proposta.criadoPorId || '',
+        proposta.criadoPor || '',
+        jsonStr,
+        proposta.criadoEm || agora,
+        agora
+      ]
+    );
+
+    await conn.query(
+      `INSERT INTO logs_auditoria (id, proposta_id, proposta_titulo, usuario_nome, acao, detalhes, data_hora) 
+       VALUES (?, ?, ?, ?, 'EDICAO', 'Proposta comercial salva/atualizada no MySQL.', ?)`,
+      [`log_${Date.now()}`, proposta.id, proposta.titulo, proposta.criadoPor || 'Admin', agora]
+    );
+
+    await conn.end();
+    return res.json({ success: true, proposta });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/propostas/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const conn = await getDbConnection();
+    await conn.query('DELETE FROM propostas WHERE id = ?', [id]);
+    await conn.query(
+      `INSERT INTO logs_auditoria (id, proposta_id, usuario_nome, acao, detalhes, status_seguranca, data_hora) 
+       VALUES (?, ?, 'Admin', 'EXCLUSAO', 'Proposta comercial excluída permanentemente.', 'ALERTA', ?)`,
+      [`log_${Date.now()}`, id, new Date().toISOString()]
+    );
+    await conn.end();
+    return res.json({ success: true });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Consulta de proposta por token (link público de cliente)
+app.get('/api/proposta/token/:token', async (req, res) => {
+  try {
+    const { token } = req.params;
+    const conn = await getDbConnection();
+    const [rows]: any = await conn.query('SELECT dados_json FROM propostas WHERE token = ? LIMIT 1', [token]);
+    
+    if (rows && rows.length > 0) {
+      const prop = JSON.parse(rows[0].dados_json);
+      // Registra visualização no log
+      await conn.query(
+        `INSERT INTO logs_auditoria (id, proposta_id, proposta_titulo, usuario_nome, acao, detalhes, data_hora) 
+         VALUES (?, ?, ?, 'Cliente Público', 'VISUALIZACAO', 'Acesso ao link público da proposta.', ?)`,
+        [`log_${Date.now()}`, prop.id, prop.titulo, new Date().toISOString()]
+      );
+      await conn.end();
+      return res.json(prop);
+    }
+
+    await conn.end();
+    return res.status(404).json({ error: 'Proposta não encontrada.' });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Modelos de Propostas (CRUD completo)
+app.get('/api/modelos', async (req, res) => {
+  try {
+    const conn = await getDbConnection();
+    const [rows]: any = await conn.query('SELECT * FROM modelos_propostas ORDER BY criado_em DESC');
+    await conn.end();
+
+    const modelos = (rows || []).map((r: any) => {
+      try {
+        const parsed = JSON.parse(r.dados_json || '{}');
+        return {
+          id: r.id,
+          titulo: r.titulo,
+          descricao: r.descricao,
+          categoria: r.categoria,
+          criadoEm: r.criado_em,
+          ...parsed,
+        };
+      } catch (e) {
+        return {
+          id: r.id,
+          titulo: r.titulo,
+          descricao: r.descricao,
+          categoria: r.categoria,
+          criadoEm: r.criado_em,
+        };
+      }
+    });
+
+    return res.json(modelos);
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/modelos', async (req, res) => {
+  try {
+    const modelo = req.body;
+    const conn = await getDbConnection();
+    const agora = new Date().toISOString();
+    const jsonStr = JSON.stringify(modelo);
+
+    await conn.query(
+      `INSERT INTO modelos_propostas (id, titulo, descricao, categoria, dados_json, criado_em)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE
+         titulo = VALUES(titulo),
+         descricao = VALUES(descricao),
+         categoria = VALUES(categoria),
+         dados_json = VALUES(dados_json)`,
+      [
+        modelo.id || `mod_${Date.now()}`,
+        modelo.titulo || 'Novo Modelo de Proposta',
+        modelo.descricao || '',
+        modelo.categoria || 'Geral',
+        jsonStr,
+        modelo.criadoEm || agora
+      ]
+    );
+
+    await conn.query(
+      `INSERT INTO logs_auditoria (id, usuario_nome, acao, detalhes, data_hora)
+       VALUES (?, 'Admin', 'CRIACAO', 'Modelo de proposta salvo no banco de dados.', ?)`,
+      [`log_${Date.now()}`, agora]
+    );
+
+    await conn.end();
+    return res.json({ success: true, modelo });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/modelos/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const conn = await getDbConnection();
+    await conn.query('DELETE FROM modelos_propostas WHERE id = ?', [id]);
+    await conn.query(
+      `INSERT INTO logs_auditoria (id, usuario_nome, acao, detalhes, status_seguranca, data_hora)
+       VALUES (?, 'Admin', 'EXCLUSAO', 'Modelo de proposta removido do MySQL.', 'ALERTA', ?)`,
+      [`log_${Date.now()}`, new Date().toISOString()]
+    );
+    await conn.end();
+    return res.json({ success: true });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Logs de Auditoria
+app.get('/api/logs', async (req, res) => {
+  try {
+    const conn = await getDbConnection();
+    const [rows]: any = await conn.query('SELECT * FROM logs_auditoria ORDER BY data_hora DESC LIMIT 200');
+    await conn.end();
+
+    const logs = (rows || []).map((r: any) => ({
+      id: r.id,
+      propostaId: r.proposta_id,
+      propostaTitulo: r.proposta_titulo,
+      usuarioNome: r.usuario_nome,
+      acao: r.acao,
+      detalhes: r.detalhes,
+      ip: r.ip,
+      userAgent: r.user_agent,
+      statusSeguranca: r.status_seguranca,
+      dataHora: r.data_hora
+    }));
+
+    return res.json(logs);
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/logs', async (req, res) => {
+  try {
+    const log = req.body;
+    const conn = await getDbConnection();
+    await conn.query(
+      `INSERT INTO logs_auditoria (id, proposta_id, proposta_titulo, usuario_nome, acao, detalhes, ip, user_agent, status_seguranca, data_hora) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        log.id || `log_${Date.now()}`,
+        log.propostaId || '',
+        log.propostaTitulo || '',
+        log.usuarioNome || 'Sistema',
+        log.acao || 'INFO',
+        log.detalhes || '',
+        log.ip || req.ip || '127.0.0.1',
+        log.userAgent || req.headers['user-agent'] || '',
+        log.statusSeguranca || 'OK',
+        log.dataHora || new Date().toISOString()
+      ]
+    );
+    await conn.end();
+    return res.json({ success: true });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Gestão de Usuários da Equipe
+app.get('/api/usuarios', async (req, res) => {
+  try {
+    const conn = await getDbConnection();
+    const [rows]: any = await conn.query('SELECT id, nome, email, whatsapp, cargo, foto_url, slug, papel, status, ultimo_login, pode_criar_secoes FROM usuarios');
+    await conn.end();
+
+    const usuarios = (rows || []).map((u: any) => ({
+      id: u.id,
+      nome: u.nome,
+      email: u.email,
+      whatsapp: u.whatsapp || '',
+      cargo: u.cargo || '',
+      fotoUrl: u.foto_url || '',
+      slug: u.slug || '',
+      papel: u.papel,
+      status: u.status,
+      ultimoLogin: u.ultimo_login,
+      podeCriarSecoes: u.pode_criar_secoes === 1,
+    }));
+
+    return res.json(usuarios);
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/usuarios', async (req, res) => {
+  try {
+    const u = req.body;
+    const conn = await getDbConnection();
+    const agora = new Date().toISOString();
+
+    let query = '';
+    let params: any[] = [];
+
+    if (u.senha) {
+      const hashed = await bcrypt.hash(u.senha, 10);
+      query = `
+        INSERT INTO usuarios (id, nome, email, senha, whatsapp, cargo, foto_url, slug, papel, status, pode_criar_secoes, criado_em) 
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE 
+          nome = VALUES(nome),
+          senha = VALUES(senha),
+          whatsapp = VALUES(whatsapp),
+          cargo = VALUES(cargo),
+          foto_url = VALUES(foto_url),
+          slug = VALUES(slug),
+          papel = VALUES(papel),
+          status = VALUES(status),
+          pode_criar_secoes = VALUES(pode_criar_secoes)
+      `;
+      params = [u.id, u.nome, u.email, hashed, u.whatsapp || '', u.cargo || '', u.fotoUrl || '', u.slug || '', u.papel || 'comercial', u.status || 'ativo', u.podeCriarSecoes ? 1 : 0, agora];
+    } else {
+      query = `
+        INSERT INTO usuarios (id, nome, email, senha, whatsapp, cargo, foto_url, slug, papel, status, pode_criar_secoes, criado_em) 
+        VALUES (?, ?, ?, 'temp', ?, ?, ?, ?, ?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE 
+          nome = VALUES(nome),
+          whatsapp = VALUES(whatsapp),
+          cargo = VALUES(cargo),
+          foto_url = VALUES(foto_url),
+          slug = VALUES(slug),
+          papel = VALUES(papel),
+          status = VALUES(status),
+          pode_criar_secoes = VALUES(pode_criar_secoes)
+      `;
+      params = [u.id, u.nome, u.email, u.whatsapp || '', u.cargo || '', u.fotoUrl || '', u.slug || '', u.papel || 'comercial', u.status || 'ativo', u.podeCriarSecoes ? 1 : 0, agora];
+    }
+
+    await conn.query(query, params);
+    await conn.query(
+      `INSERT INTO logs_auditoria (id, usuario_nome, acao, detalhes, data_hora) 
+       VALUES (?, 'Admin', 'EDICAO', 'Usuário salvo ou atualizado na equipe.', ?)`,
+      [`log_${Date.now()}`, agora]
+    );
+
+    await conn.end();
+    return res.json({ success: true });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/usuarios/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const conn = await getDbConnection();
+    await conn.query('DELETE FROM usuarios WHERE id = ?', [id]);
+    await conn.query(
+      `INSERT INTO logs_auditoria (id, usuario_nome, acao, detalhes, status_seguranca, data_hora) 
+       VALUES (?, 'Admin', 'EXCLUSAO', 'Usuário removido da equipe comercial.', 'ALERTA', ?)`,
+      [`log_${Date.now()}`, new Date().toISOString()]
+    );
+    await conn.end();
+    return res.json({ success: true });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ==========================================
+// 5. MIDDLEWARE DE INSTALAÇÃO & ARQUIVOS ESTÁTICOS
+// ==========================================
+
+app.use((req, res, next) => {
+  if (req.path.startsWith('/api')) return next();
+
+  const isInstalled = fs.existsSync(LOCK_FILE);
+  if (!isInstalled && req.path !== '/install') {
+    return res.redirect('/install');
+  }
+  next();
+});
+
+// Servir frontend compilado
+app.use(express.static(path.join(__dirname)));
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, 'index.html'));
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Servidor de Propostas ativo na porta ${PORT}`));

@@ -1,0 +1,6 @@
+{
+  "name": "GC Studio Marketing - Propostas Comerciais",
+  "description": "Sistema de gestão e envio seguro de propostas comerciais da GC Studio Marketing com validação de expiração de links, controle de acesso e apresentação digital interativa.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
