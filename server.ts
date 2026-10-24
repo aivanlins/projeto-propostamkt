@@ -6,6 +6,8 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import bcrypt from 'bcryptjs';
+import crypto from 'crypto';
+import nodemailer from 'nodemailer';
 import multer from 'multer';
 
 dotenv.config();
@@ -62,6 +64,50 @@ async function garantirColunaSlug(conn: any) {
   } catch (e: any) {
     console.error('Aviso: não foi possível verificar/criar a coluna slug em propostas:', e.message);
   }
+}
+
+// ===== Migrações seguras de colunas (instalações antigas) =====
+let colunasUsuariosVerificadas = false;
+async function garantirColunasUsuarios(conn: any) {
+  if (colunasUsuariosVerificadas) return;
+  const cols: [string, string][] = [
+    ['slug', 'VARCHAR(100) DEFAULT NULL'],
+    ['reset_token', 'VARCHAR(255) NULL'],
+    ['reset_expiry', 'DATETIME NULL'],
+  ];
+  for (const [nome, def] of cols) {
+    try {
+      const [r]: any = await conn.query('SHOW COLUMNS FROM usuarios LIKE ?', [nome]);
+      if (!r || r.length === 0) await conn.query(`ALTER TABLE usuarios ADD COLUMN ${nome} ${def}`);
+    } catch (e: any) {
+      console.error(`Aviso: não foi possível criar a coluna usuarios.${nome}:`, e.message);
+    }
+  }
+  colunasUsuariosVerificadas = true;
+}
+
+function slugifyNome(nome: string): string {
+  return String(nome || '').toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu, '')
+    .trim().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '').replace(/-{2,}/g, '-').replace(/^-|-$/g, '') || 'usuario';
+}
+
+async function gerarSlugUsuarioUnico(conn: any, base: string, idAtual?: string): Promise<string> {
+  const raiz = slugifyNome(base);
+  let slug = raiz;
+  let i = 2;
+  while (true) {
+    const [r]: any = await conn.query('SELECT id FROM usuarios WHERE slug = ? AND id <> ? LIMIT 1', [slug, idAtual || '']);
+    if (!r || r.length === 0) return slug;
+    slug = `${raiz}-${i++}`;
+  }
+}
+
+async function getConfigAgencia(conn: any): Promise<any> {
+  try {
+    const [rows]: any = await conn.query('SELECT dados_json FROM configuracao_fixa LIMIT 1');
+    if (rows && rows[0] && rows[0].dados_json) return JSON.parse(rows[0].dados_json);
+  } catch (e) {}
+  return {};
 }
 
 async function getDbConnection() {
@@ -622,6 +668,89 @@ app.get('/api/proposta/token/:token', async (req, res) => {
   }
 });
 
+// ===== Cartão digital público: /u/:slug =====
+app.get('/api/usuario/cartao/:slug', async (req, res) => {
+  try {
+    const slug = String(req.params.slug || '').toLowerCase().replace(/[^a-z0-9-_]/g, '');
+    const conn = await getDbConnection();
+    await garantirColunasUsuarios(conn);
+    const [rows]: any = await conn.query(
+      "SELECT id, nome, email, whatsapp, cargo, foto_url, slug FROM usuarios WHERE (slug = ? OR id = ?) AND status <> 'bloqueado' LIMIT 1",
+      [slug, slug]
+    );
+    await conn.end();
+    if (!rows || rows.length === 0) return res.status(404).json({ erro: 'Cartão não encontrado.' });
+    const u = rows[0];
+    return res.json({ id: u.id, nome: u.nome, email: u.email, whatsapp: u.whatsapp || '', cargo: u.cargo || '', fotoUrl: u.foto_url || '', slug: u.slug || u.id });
+  } catch (err: any) {
+    return res.status(500).json({ erro: err.message });
+  }
+});
+
+// ===== Recuperação de senha =====
+app.post('/api/auth/esqueci-senha', async (req, res) => {
+  try {
+    const email = String(req.body?.email || '').trim().toLowerCase();
+    if (!email) return res.status(400).json({ erro: 'Informe o e-mail.' });
+    const conn = await getDbConnection();
+    await garantirColunasUsuarios(conn);
+    const [rows]: any = await conn.query('SELECT id, nome FROM usuarios WHERE LOWER(email) = ? LIMIT 1', [email]);
+    if (!rows || rows.length === 0) {
+      await conn.end();
+      return res.status(404).json({ erro: 'Nenhum usuário encontrado com este e-mail.' });
+    }
+    const token = crypto.randomBytes(32).toString('hex');
+    await conn.query('UPDATE usuarios SET reset_token = ?, reset_expiry = DATE_ADD(NOW(), INTERVAL 1 HOUR) WHERE id = ?', [token, rows[0].id]);
+    const cfg = await getConfigAgencia(conn);
+    await conn.end();
+
+    const link = `${req.protocol}://${req.get('host')}/redefinir-senha?token=${token}`;
+    if (!cfg.smtpHost || !cfg.smtpUser || !cfg.smtpPass) {
+      return res.json({ sucesso: true, link, avisoSemSmtp: true });
+    }
+    try {
+      const porta = Number(cfg.smtpPort) || 465;
+      const transporter = nodemailer.createTransport({
+        host: cfg.smtpHost, port: porta, secure: porta === 465,
+        auth: { user: cfg.smtpUser, pass: cfg.smtpPass },
+      });
+      await transporter.sendMail({
+        from: cfg.smtpFrom || cfg.smtpUser,
+        to: email,
+        subject: `${cfg.nomeAgencia || 'Sistema de Propostas'} • Redefinição de senha`,
+        text: `Olá, ${rows[0].nome}!\n\nPara redefinir sua senha, acesse o link abaixo (válido por 1 hora):\n${link}\n\nSe você não solicitou, ignore este e-mail.`,
+        html: `<p>Olá, <strong>${String(rows[0].nome).replace(/</g, '&lt;')}</strong>!</p><p>Para redefinir sua senha, clique no link abaixo (válido por 1 hora):</p><p><a href="${link}">${link}</a></p><p>Se você não solicitou, ignore este e-mail.</p>`,
+      });
+      return res.json({ sucesso: true, emailEnviado: true });
+    } catch (e: any) {
+      console.error('Falha no envio SMTP:', e.message);
+      return res.json({ sucesso: true, link, avisoSemSmtp: true, erroSmtp: e.message });
+    }
+  } catch (err: any) {
+    return res.status(500).json({ erro: err.message });
+  }
+});
+
+app.post('/api/auth/redefinir-senha', async (req, res) => {
+  try {
+    const token = String(req.body?.token || '');
+    const novaSenha = String(req.body?.novaSenha || '');
+    if (!token || novaSenha.length < 6) return res.status(400).json({ erro: 'Token inválido ou senha com menos de 6 caracteres.' });
+    const conn = await getDbConnection();
+    await garantirColunasUsuarios(conn);
+    const [rows]: any = await conn.query('SELECT id FROM usuarios WHERE reset_token = ? AND reset_expiry > NOW() LIMIT 1', [token]);
+    if (!rows || rows.length === 0) {
+      await conn.end();
+      return res.status(400).json({ erro: 'Link inválido ou expirado. Solicite uma nova recuperação.' });
+    }
+    await conn.query('UPDATE usuarios SET senha = ?, reset_token = NULL, reset_expiry = NULL WHERE id = ?', [await bcrypt.hash(novaSenha, 10), rows[0].id]);
+    await conn.end();
+    return res.json({ sucesso: true });
+  } catch (err: any) {
+    return res.status(500).json({ erro: err.message });
+  }
+});
+
 // Consulta de proposta pela URL amigável (/proposta-<slug>) — link público de cliente
 app.get('/api/proposta/slug/:slug', async (req, res) => {
   try {
@@ -857,7 +986,9 @@ app.post('/api/usuarios', async (req, res) => {
     }
 
     const id = u.id || `usr_${Date.now()}`;
-    const campos = [nome, email, u.whatsapp || '', u.cargo || '', u.fotoUrl || '', u.slug || '', papel, u.status || 'ativo', u.podeCriarSecoes ? 1 : 0];
+    await garantirColunasUsuarios(conn);
+    const slugUsuario = await gerarSlugUsuarioUnico(conn, u.slug || nome, id);
+    const campos = [nome, email, u.whatsapp || '', u.cargo || '', u.fotoUrl || '', slugUsuario, papel, u.status || 'ativo', u.podeCriarSecoes ? 1 : 0];
 
     if (isEdicao) {
       await conn.query(

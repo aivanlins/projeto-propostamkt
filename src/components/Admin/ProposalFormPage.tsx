@@ -1,3 +1,4 @@
+import { maskPhone } from '../../utils/masks';
 import React, { useState } from 'react';
 import { 
   ArrowLeft, Save, Plus, Trash2, Clock, Check, Sparkles, 
@@ -604,8 +605,9 @@ export const ProposalFormPage: React.FC<ProposalFormPageProps> = ({
                     type="text"
                     required
                     value={clienteTelefone}
-                    onChange={e => setClienteTelefone(e.target.value)}
-                    placeholder="Ex: +55 12 98111-2233"
+                    onChange={e => setClienteTelefone(maskPhone(e.target.value))}
+                    maxLength={17}
+                    placeholder="+55 11 99999-9999"
                     className="w-full px-4 py-3 rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 text-sm text-zinc-900 dark:text-white focus:ring-2 focus:ring-purple-600 outline-none"
                   />
                   {errosValidacao.clienteTelefone && <p className="text-xs text-rose-500 mt-1">{errosValidacao.clienteTelefone}</p>}

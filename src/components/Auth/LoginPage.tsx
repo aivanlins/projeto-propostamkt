@@ -11,6 +11,31 @@ export function LoginPage({ onLogin }: LoginPageProps) {
   const [carregando, setCarregando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
   const [esqueceuAberto, setEsqueceuAberto] = useState(false);
+  const [recEmail, setRecEmail] = useState('');
+  const [recEnviando, setRecEnviando] = useState(false);
+  const [recErro, setRecErro] = useState('');
+  const [recResultado, setRecResultado] = useState<{ link?: string; avisoSemSmtp?: boolean } | null>(null);
+  const senhaRedefinida = new URLSearchParams(window.location.search).get('senhaRedefinida') === '1';
+
+  const handleEsqueciSenha = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setRecErro('');
+    setRecEnviando(true);
+    try {
+      const res = await fetch('/api/auth/esqueci-senha', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: recEmail }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.sucesso) throw new Error(data.erro || 'Não foi possível processar a solicitação.');
+      setRecResultado(data);
+    } catch (err: any) {
+      setRecErro(err.message);
+    } finally {
+      setRecEnviando(false);
+    }
+  };
   const [agencia, setAgencia] = useState<{ logoUrl?: string; nomeAgencia?: string; corPrimaria?: string }>({});
 
   // Logo dinâmica: busca a identidade da agência no endpoint público /api/config
@@ -69,6 +94,7 @@ export function LoginPage({ onLogin }: LoginPageProps) {
             </div>
           )}
           <h2 className="text-2xl font-black text-white tracking-tight">Login Administrativo</h2>
+          {senhaRedefinida && <p className="text-xs text-emerald-400 mt-2">Senha redefinida com sucesso! Faça login com a nova senha.</p>}
           <p className="text-xs text-zinc-400 mt-1">Acesso exclusivo para administradores e equipe</p>
         </div>
 
@@ -154,13 +180,29 @@ export function LoginPage({ onLogin }: LoginPageProps) {
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-xs">
           <div className="bg-zinc-900 border border-zinc-800 p-6 rounded-3xl max-w-sm w-full space-y-4 text-center">
             <h3 className="text-lg font-bold text-white">Recuperação de Acesso</h3>
-            <p className="text-xs text-zinc-400 leading-relaxed">
-              Por motivos de segurança e proteção dos dados de clientes, redefinições de senha do Super Admin são feitas diretamente no banco de dados MySQL via phpMyAdmin. Fale com o administrador do sistema.
-            </p>
+            {!recResultado ? (
+              <form onSubmit={handleEsqueciSenha} className="space-y-3 text-left">
+                <p className="text-xs text-zinc-400">Informe o e-mail cadastrado para receber o link de redefinição.</p>
+                <input type="email" required value={recEmail} onChange={e => setRecEmail(e.target.value)} placeholder="seu.email@empresa.com"
+                  className="w-full px-4 py-2.5 rounded-xl border border-zinc-700 bg-zinc-800 text-sm text-white outline-none" />
+                {recErro && <p className="text-xs text-rose-400">{recErro}</p>}
+                <button disabled={recEnviando} className="w-full py-2.5 rounded-xl bg-purple-600 hover:bg-purple-700 text-xs font-bold text-white disabled:opacity-60">
+                  {recEnviando ? 'Enviando...' : 'Enviar link de recuperação'}
+                </button>
+              </form>
+            ) : recResultado.avisoSemSmtp ? (
+              <div className="space-y-2 text-left">
+                <p className="text-xs text-amber-400">Link gerado (SMTP não configurado). Copie o link abaixo e envie manualmente:</p>
+                <input readOnly value={recResultado.link} onFocus={e => e.currentTarget.select()} className="w-full px-3 py-2 rounded-xl bg-zinc-800 text-[11px] font-mono text-zinc-200" />
+                <button type="button" onClick={() => navigator.clipboard.writeText(recResultado.link || '').catch(() => {})} className="w-full py-2 rounded-xl bg-zinc-700 hover:bg-zinc-600 text-xs font-bold text-white">Copiar link</button>
+              </div>
+            ) : (
+              <p className="text-sm text-emerald-400">E-mail enviado! Verifique sua caixa de entrada (o link vale por 1 hora).</p>
+            )}
             <div className="flex gap-2">
               <button
                 type="button"
-                onClick={() => setEsqueceuAberto(false)}
+                onClick={() => { setEsqueceuAberto(false); setRecResultado(null); setRecErro(''); }}
                 className="flex-1 py-2 px-4 rounded-xl border border-zinc-700 hover:bg-zinc-800 text-xs font-bold"
               >
                 Fechar

@@ -1,3 +1,4 @@
+import { maskPhone } from '../../utils/masks';
 import React, { useState } from 'react';
 import { 
   Building2, Palette, Upload, Check, Sparkles, Phone, Mail, 
@@ -366,11 +367,36 @@ export const AgencySettingsPage: React.FC<AgencySettingsPageProps> = ({
                 <input
                   type="text"
                   value={formData.telefoneWhatsapp}
-                  onChange={e => setFormData({ ...formData, telefoneWhatsapp: e.target.value })}
-                  placeholder="+55 12 98101-9913"
+                  onChange={e => setFormData({ ...formData, telefoneWhatsapp: maskPhone(e.target.value) })}
+                  maxLength={17}
+                  placeholder="+55 11 99999-9999"
                   className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 text-sm font-mono text-zinc-900 dark:text-white focus:ring-2 focus:ring-purple-500 outline-none"
                 />
               </div>
+
+              <details className="md:col-span-2 rounded-2xl border border-zinc-200 dark:border-zinc-800 p-4">
+                <summary className="cursor-pointer text-xs font-bold uppercase text-zinc-500">Configurações de E-mail SMTP (opcional – recuperação de senha)</summary>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-3">
+                  {([
+                    ['smtpHost', 'Servidor SMTP', 'mail.seudominio.com.br', 'text'],
+                    ['smtpPort', 'Porta', '465', 'text'],
+                    ['smtpUser', 'Usuário', 'contato@seudominio.com.br', 'text'],
+                    ['smtpPass', 'Senha', '••••••••', 'password'],
+                    ['smtpFrom', 'Remetente (From)', 'Agência <contato@seudominio.com.br>', 'text'],
+                  ] as const).map(([campo, label, ph, tipo]) => (
+                    <label key={campo} className="block text-xs">
+                      <span className="block font-bold text-zinc-500 mb-1">{label}</span>
+                      <input
+                        type={tipo}
+                        value={(formData as any)[campo] || ''}
+                        placeholder={ph}
+                        onChange={e => setFormData({ ...formData, [campo]: e.target.value })}
+                        className="w-full px-3 py-2 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 text-sm"
+                      />
+                    </label>
+                  ))}
+                </div>
+              </details>
             </div>
 
             <div>

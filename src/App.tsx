@@ -33,6 +33,7 @@ import { CpanelDeploymentKit } from './components/DeploymentKit/CpanelDeployment
 import { UserManagementModal } from './components/Admin/UserManagementModal';
 import { AgencySettingsPage } from './components/Admin/AgencySettingsPage';
 import { LoginPage } from './components/Auth/LoginPage';
+import { RedefinirSenhaPage } from './components/Auth/RedefinirSenhaPage';
 import { baixarVCard } from './utils/security';
 import { detectarRotaPublica, gerarSlugUnico } from './utils/propostaUrl';
 
@@ -120,6 +121,23 @@ export default function App() {
   const [propostaEmEdicao, setPropostaEmEdicao] = useState<Proposta | null>(null);
   // Página pública da proposta (/proposta-<slug> ou ?token=...): sem login, sem menus do sistema
   const [rotaPublica] = useState(detectarRotaPublica);
+  // Cartão digital público (/u/<slug>)
+  const [slugCartaoPublico] = useState(() => {
+    const m = window.location.pathname.match(/\/(?:u|cartao)\/([a-z0-9_-]+)\/?$/i);
+    return m ? m[1].toLowerCase() : null;
+  });
+  const [cartaoPublico, setCartaoPublico] = useState<Usuario | null>(null);
+  const [cartaoPublicoStatus, setCartaoPublicoStatus] = useState<'carregando' | 'ok' | 'nao_encontrado'>('carregando');
+  useEffect(() => {
+    if (!slugCartaoPublico) return;
+    fetch(`/api/usuario/cartao/${encodeURIComponent(slugCartaoPublico)}`)
+      .then(r => (r.ok && (r.headers.get('content-type') || '').includes('json') ? r.json() : null))
+      .catch(() => null)
+      .then(u => {
+        if (u && u.id) { setCartaoPublico(u as Usuario); setCartaoPublicoStatus('ok'); document.title = u.nome; }
+        else setCartaoPublicoStatus('nao_encontrado');
+      });
+  }, [slugCartaoPublico]);
   const [statusPublico, setStatusPublico] = useState<'carregando' | 'ok' | 'nao_encontrada'>(rotaPublica ? 'carregando' : 'ok');
   const [darkMode, setDarkMode] = useState<boolean>(() => localStorage.getItem('gc_dark_mode') === 'true');
 
@@ -576,6 +594,45 @@ export default function App() {
   );
 
   // PÁGINA PÚBLICA DO CLIENTE: sem login, sem menu, sem barras do sistema
+  // Rota pública de redefinição de senha
+  if (window.location.pathname.replace(/\/+$/, '').endsWith('/redefinir-senha')) {
+    return <RedefinirSenhaPage />;
+  }
+
+  // Cartão digital público (/u/<slug>)
+  if (slugCartaoPublico) {
+    const u = cartaoPublico;
+    return (
+      <div className="min-h-screen flex items-center justify-center p-4 bg-zinc-950 text-white">
+        {cartaoPublicoStatus === 'carregando' && <Loader2 className="w-6 h-6 animate-spin text-purple-500" />}
+        {cartaoPublicoStatus === 'nao_encontrado' && <p className="text-sm text-zinc-400">Cartão não encontrado.</p>}
+        {u && (
+          <div className="bg-zinc-900 p-6 rounded-3xl max-w-md w-full border border-zinc-800 text-center space-y-4">
+            {u.fotoUrl
+              ? <img src={u.fotoUrl} alt={u.nome} className="w-24 h-24 rounded-full object-cover mx-auto border-2 border-purple-500" />
+              : <div className="w-24 h-24 rounded-full mx-auto bg-purple-600 flex items-center justify-center text-3xl font-black">{u.nome.slice(0, 1).toUpperCase()}</div>}
+            <h1 className="text-xl font-bold">{u.nome}</h1>
+            <p className="text-xs text-amber-400">{u.cargo || 'Consultor Comercial'}</p>
+            {config.nomeAgencia && <p className="text-xs text-zinc-400">{config.nomeAgencia}</p>}
+            <div className="p-4 bg-zinc-800 rounded-2xl text-xs text-left space-y-2">
+              {u.whatsapp && (
+                <a href={`https://wa.me/${u.whatsapp.replace(/\D/g, '')}`} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 hover:underline">
+                  <Phone className="w-4 h-4 text-emerald-400" /><span>{u.whatsapp}</span>
+                </a>
+              )}
+              <a href={`mailto:${u.email}`} className="flex items-center gap-2 hover:underline">
+                <Mail className="w-4 h-4 text-blue-400" /><span>{u.email}</span>
+              </a>
+            </div>
+            <button onClick={() => baixarVCard(u)} className="w-full py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-xs font-bold flex items-center justify-center gap-1.5">
+              <Download className="w-3.5 h-3.5" /> Salvar Contato
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  }
+
   if (rotaPublica) {
     return (
       <div className="min-h-screen bg-zinc-50 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 font-sans transition-colors duration-200">

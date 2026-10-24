@@ -241,6 +241,12 @@ export interface Proposta {
 
 export interface ConfiguracaoFixa {
   id: string;
+  // SMTP opcional (recuperação de senha)
+  smtpHost?: string;
+  smtpPort?: string;
+  smtpUser?: string;
+  smtpPass?: string;
+  smtpFrom?: string;
   nomeAgencia: string;
   slogan: string;
   cnpj: string;

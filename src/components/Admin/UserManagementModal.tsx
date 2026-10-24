@@ -1,3 +1,4 @@
+import { maskPhone } from '../../utils/masks';
 import React, { useState } from 'react';
 import { 
   Users, UserPlus, Shield, Phone, Mail, Lock, CheckCircle, 
@@ -188,7 +189,7 @@ export const UserManagementModal: React.FC<UserManagementModalProps> = ({
 
   const handleCopiarLinkCartao = (u: Usuario) => {
     const baseUrl = window.location.origin + window.location.pathname;
-    const url = `${baseUrl}?perfil=${u.slug || u.id}`;
+    const url = `${window.location.origin}/u/${u.slug || u.id}`;
     navigator.clipboard.writeText(url);
     setLinkCopiado(true);
     setTimeout(() => setLinkCopiado(false), 2500);
@@ -547,8 +548,9 @@ export const UserManagementModal: React.FC<UserManagementModalProps> = ({
                     type="text"
                     required
                     value={whatsapp}
-                    onChange={e => setWhatsapp(e.target.value)}
-                    placeholder="Ex: +55 12 98101-9913"
+                    onChange={e => setWhatsapp(maskPhone(e.target.value))}
+                    maxLength={17}
+                    placeholder="+55 11 99999-9999"
                     className="w-full px-4 py-3 rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 text-zinc-900 dark:text-white text-sm focus:ring-2 focus:ring-purple-600 outline-none"
                   />
                 </div>
@@ -701,7 +703,7 @@ export const UserManagementModal: React.FC<UserManagementModalProps> = ({
                   <input
                     type="text"
                     readOnly
-                    value={`${window.location.origin}${window.location.pathname}?perfil=${usuarioSelecionadoCartao.slug || usuarioSelecionadoCartao.id}`}
+                    value={`${window.location.origin}/u/${usuarioSelecionadoCartao.slug || usuarioSelecionadoCartao.id}`}
                     className="flex-1 px-3 py-2 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 text-xs font-mono text-zinc-700 dark:text-zinc-300 select-all"
                   />
                   <button
