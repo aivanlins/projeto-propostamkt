@@ -139,7 +139,7 @@ export const ShareProposalModal: React.FC<ShareProposalModalProps> = ({ proposta
                 <Info className="w-4 h-4 shrink-0 mt-0.5" />
                 <span>
                   O envio é feito pelo <strong>seu programa de e-mail</strong> (Outlook, Gmail etc.). "Abrir no meu e-mail" cria a mensagem em texto para
-                  {' '}<strong>{proposta.clienteEmail || 'o cliente'}</strong>. Para o layout visual, use "Copiar HTML" e cole no editor do seu e-mail.
+                  {' '}<strong>{proposta.clienteEmail || 'o cliente'}</strong>. Use "Prévia do E-mail" para ver o layout visual em uma nova aba.
                   Dados da agência vêm de <em>Identidade &amp; Agência</em>.
                 </span>
               </div>
@@ -162,11 +162,14 @@ export const ShareProposalModal: React.FC<ShareProposalModalProps> = ({ proposta
                   <Mail className="w-3.5 h-3.5" /> Abrir no meu e-mail
                 </a>
                 <button
-                  onClick={() => handleCopiar('html', htmlEmail)}
+                  onClick={() => {
+                    const blobUrl = URL.createObjectURL(new Blob([htmlEmail], { type: 'text/html;charset=utf-8' }));
+                    window.open(blobUrl, '_blank', 'noopener');
+                    setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
+                  }}
                   className="px-3 py-2.5 rounded-xl border border-zinc-200 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800 text-xs font-bold flex items-center justify-center gap-1.5"
                 >
-                  {copiado === 'html' ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Code2 className="w-3.5 h-3.5" />}
-                  {copiado === 'html' ? 'HTML copiado!' : 'Copiar HTML'}
+                  <Code2 className="w-3.5 h-3.5" /> Prévia do E-mail
                 </button>
                 <button
                   onClick={() => handleCopiar('texto', `${assunto}\n\n${textoEmail}`)}
