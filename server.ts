@@ -6,10 +6,17 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import bcrypt from 'bcryptjs';
+import multer from 'multer';
 
 dotenv.config();
 
 const app = express();
+app.set('trust proxy', 1);
+
+// IP real do cliente (atrás de proxy/cPanel)
+function getIp(req: express.Request): string {
+  return req.headers['x-forwarded-for']?.toString().split(',')[0].trim() ?? req.ip ?? '0.0.0.0';
+}
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const LOCK_FILE = path.join(__dirname, 'installed.lock');
 const DB_CONFIG_FILE = path.join(__dirname, 'db-config.json');
@@ -249,9 +256,9 @@ app.post('/api/install/create-tables', async (req, res) => {
 
     // Registra log da criação de tabelas
     await connection.query(
-      `INSERT INTO logs_auditoria (id, usuario_nome, acao, detalhes, data_hora) 
-       VALUES (?, 'Instalador Automático', 'CRIACAO', 'Tabelas do sistema estruturadas no MySQL com sucesso.', ?)`,
-      [`log_${Date.now()}`, new Date().toISOString()]
+      `INSERT INTO logs_auditoria (id, usuario_nome, acao, detalhes, data_hora, ip) 
+       VALUES (?, 'Instalador Automático', 'CRIACAO', 'Tabelas do sistema estruturadas no MySQL com sucesso.', ?, ?)`,
+      [`log_${Date.now()}`, new Date().toISOString(), getIp(req)]
     );
 
     await connection.end();
@@ -298,9 +305,9 @@ app.post('/api/install/create-admin', async (req, res) => {
 
     // Registra log de instalação
     await connection.query(
-      `INSERT INTO logs_auditoria (id, usuario_nome, acao, detalhes, data_hora) 
-       VALUES (?, ?, 'CRIACAO', 'Instalação do sistema finalizada. Super Administrador ativado.', ?)`,
-      [`log_${Date.now()}`, name || 'Super Admin', agora]
+      `INSERT INTO logs_auditoria (id, usuario_nome, acao, detalhes, data_hora, ip) 
+       VALUES (?, ?, 'CRIACAO', 'Instalação do sistema finalizada. Super Administrador ativado.', ?, ?)`,
+      [`log_${Date.now()}`, name || 'Super Admin', agora, getIp(req)]
     );
 
     await connection.end();
@@ -352,9 +359,9 @@ app.post('/api/login', async (req, res) => {
 
       // Log de falha de login
       await connection.query(
-        `INSERT INTO logs_auditoria (id, usuario_nome, acao, detalhes, status_seguranca, data_hora) 
-         VALUES (?, ?, 'VISUALIZACAO', 'Tentativa de login com e-mail inexistente.', 'ALERTA', ?)`,
-        [`log_${Date.now()}`, email, new Date().toISOString()]
+        `INSERT INTO logs_auditoria (id, usuario_nome, acao, detalhes, status_seguranca, data_hora, ip) 
+         VALUES (?, ?, 'VISUALIZACAO', 'Tentativa de login com e-mail inexistente.', 'ALERTA', ?, ?)`,
+        [`log_${Date.now()}`, email, new Date().toISOString(), getIp(req)]
       );
       await connection.end();
 
@@ -375,9 +382,9 @@ app.post('/api/login', async (req, res) => {
 
     if (!senhaValida) {
       await connection.query(
-        `INSERT INTO logs_auditoria (id, usuario_id, usuario_nome, acao, detalhes, status_seguranca, data_hora) 
-         VALUES (?, ?, ?, 'VISUALIZACAO', 'Tentativa de login com senha incorreta.', 'ALERTA', ?)`,
-        [`log_${Date.now()}`, user.id, user.nome, agora]
+        `INSERT INTO logs_auditoria (id, usuario_id, usuario_nome, acao, detalhes, status_seguranca, data_hora, ip) 
+         VALUES (?, ?, ?, 'VISUALIZACAO', 'Tentativa de login com senha incorreta.', 'ALERTA', ?, ?)`,
+        [`log_${Date.now()}`, user.id, user.nome, agora, getIp(req)]
       );
       await connection.end();
       return res.status(401).json({ error: 'Senha incorreta.' });
@@ -391,9 +398,9 @@ app.post('/api/login', async (req, res) => {
     // Atualiza data do último login e registra log
     await connection.query('UPDATE usuarios SET ultimo_login = ? WHERE id = ?', [agora, user.id]);
     await connection.query(
-      `INSERT INTO logs_auditoria (id, usuario_id, usuario_nome, acao, detalhes, data_hora) 
-       VALUES (?, ?, ?, 'ATIVACAO', 'Login bem-sucedido no painel de gestão.', ?)`,
-      [`log_${Date.now()}`, user.id, user.nome, agora]
+      `INSERT INTO logs_auditoria (id, usuario_id, usuario_nome, acao, detalhes, data_hora, ip) 
+       VALUES (?, ?, ?, 'ATIVACAO', 'Login bem-sucedido no painel de gestão.', ?, ?)`,
+      [`log_${Date.now()}`, user.id, user.nome, agora, getIp(req)]
     );
 
     await connection.end();
@@ -483,9 +490,9 @@ app.post('/api/config', async (req, res) => {
     );
 
     await conn.query(
-      `INSERT INTO logs_auditoria (id, usuario_nome, acao, detalhes, data_hora) 
-       VALUES (?, 'Admin', 'EDICAO', 'Configurações e identidade visual da agência atualizadas no banco.', ?)`,
-      [`log_${Date.now()}`, agora]
+      `INSERT INTO logs_auditoria (id, usuario_nome, acao, detalhes, data_hora, ip) 
+       VALUES (?, 'Admin', 'EDICAO', 'Configurações e identidade visual da agência atualizadas no banco.', ?, ?)`,
+      [`log_${Date.now()}`, agora, getIp(req)]
     );
 
     await conn.end();
@@ -560,9 +567,9 @@ app.post('/api/propostas', async (req, res) => {
     }
 
     await conn.query(
-      `INSERT INTO logs_auditoria (id, proposta_id, proposta_titulo, usuario_nome, acao, detalhes, data_hora) 
-       VALUES (?, ?, ?, ?, 'EDICAO', 'Proposta comercial salva/atualizada no MySQL.', ?)`,
-      [`log_${Date.now()}`, proposta.id, proposta.titulo, proposta.criadoPor || 'Admin', agora]
+      `INSERT INTO logs_auditoria (id, proposta_id, proposta_titulo, usuario_nome, acao, detalhes, data_hora, ip) 
+       VALUES (?, ?, ?, ?, 'EDICAO', 'Proposta comercial salva/atualizada no MySQL.', ?, ?)`,
+      [`log_${Date.now()}`, proposta.id, proposta.titulo, proposta.criadoPor || 'Admin', agora, getIp(req)]
     );
 
     await conn.end();
@@ -578,9 +585,9 @@ app.delete('/api/propostas/:id', async (req, res) => {
     const conn = await getDbConnection();
     await conn.query('DELETE FROM propostas WHERE id = ?', [id]);
     await conn.query(
-      `INSERT INTO logs_auditoria (id, proposta_id, usuario_nome, acao, detalhes, status_seguranca, data_hora) 
-       VALUES (?, ?, 'Admin', 'EXCLUSAO', 'Proposta comercial excluída permanentemente.', 'ALERTA', ?)`,
-      [`log_${Date.now()}`, id, new Date().toISOString()]
+      `INSERT INTO logs_auditoria (id, proposta_id, usuario_nome, acao, detalhes, status_seguranca, data_hora, ip) 
+       VALUES (?, ?, 'Admin', 'EXCLUSAO', 'Proposta comercial excluída permanentemente.', 'ALERTA', ?, ?)`,
+      [`log_${Date.now()}`, id, new Date().toISOString(), getIp(req)]
     );
     await conn.end();
     return res.json({ success: true });
@@ -600,9 +607,9 @@ app.get('/api/proposta/token/:token', async (req, res) => {
       const prop = JSON.parse(rows[0].dados_json);
       // Registra visualização no log
       await conn.query(
-        `INSERT INTO logs_auditoria (id, proposta_id, proposta_titulo, usuario_nome, acao, detalhes, data_hora) 
-         VALUES (?, ?, ?, 'Cliente Público', 'VISUALIZACAO', 'Acesso ao link público da proposta.', ?)`,
-        [`log_${Date.now()}`, prop.id, prop.titulo, new Date().toISOString()]
+        `INSERT INTO logs_auditoria (id, proposta_id, proposta_titulo, usuario_nome, acao, detalhes, data_hora, ip) 
+         VALUES (?, ?, ?, 'Cliente Público', 'VISUALIZACAO', 'Acesso ao link público da proposta.', ?, ?)`,
+        [`log_${Date.now()}`, prop.id, prop.titulo, new Date().toISOString(), getIp(req)]
       );
       await conn.end();
       return res.json(prop);
@@ -646,9 +653,9 @@ app.get('/api/proposta/slug/:slug', async (req, res) => {
     }
 
     await conn.query(
-      `INSERT INTO logs_auditoria (id, proposta_id, proposta_titulo, usuario_nome, acao, detalhes, data_hora) 
-       VALUES (?, ?, ?, 'Cliente Público', 'VISUALIZACAO', 'Acesso ao link público da proposta (URL amigável).', ?)`,
-      [`log_${Date.now()}`, prop.id, prop.titulo, new Date().toISOString()]
+      `INSERT INTO logs_auditoria (id, proposta_id, proposta_titulo, usuario_nome, acao, detalhes, data_hora, ip) 
+       VALUES (?, ?, ?, 'Cliente Público', 'VISUALIZACAO', 'Acesso ao link público da proposta (URL amigável).', ?, ?)`,
+      [`log_${Date.now()}`, prop.id, prop.titulo, new Date().toISOString(), getIp(req)]
     );
     await conn.end();
     return res.json(prop);
@@ -718,9 +725,9 @@ app.post('/api/modelos', async (req, res) => {
     );
 
     await conn.query(
-      `INSERT INTO logs_auditoria (id, usuario_nome, acao, detalhes, data_hora)
-       VALUES (?, 'Admin', 'CRIACAO', 'Modelo de proposta salvo no banco de dados.', ?)`,
-      [`log_${Date.now()}`, agora]
+      `INSERT INTO logs_auditoria (id, usuario_nome, acao, detalhes, data_hora, ip)
+       VALUES (?, 'Admin', 'CRIACAO', 'Modelo de proposta salvo no banco de dados.', ?, ?)`,
+      [`log_${Date.now()}`, agora, getIp(req)]
     );
 
     await conn.end();
@@ -736,9 +743,9 @@ app.delete('/api/modelos/:id', async (req, res) => {
     const conn = await getDbConnection();
     await conn.query('DELETE FROM modelos_propostas WHERE id = ?', [id]);
     await conn.query(
-      `INSERT INTO logs_auditoria (id, usuario_nome, acao, detalhes, status_seguranca, data_hora)
-       VALUES (?, 'Admin', 'EXCLUSAO', 'Modelo de proposta removido do MySQL.', 'ALERTA', ?)`,
-      [`log_${Date.now()}`, new Date().toISOString()]
+      `INSERT INTO logs_auditoria (id, usuario_nome, acao, detalhes, status_seguranca, data_hora, ip)
+       VALUES (?, 'Admin', 'EXCLUSAO', 'Modelo de proposta removido do MySQL.', 'ALERTA', ?, ?)`,
+      [`log_${Date.now()}`, new Date().toISOString(), getIp(req)]
     );
     await conn.end();
     return res.json({ success: true });
@@ -787,7 +794,7 @@ app.post('/api/logs', async (req, res) => {
         log.usuarioNome || 'Sistema',
         log.acao || 'INFO',
         log.detalhes || '',
-        log.ip || req.ip || '127.0.0.1',
+        getIp(req),
         log.userAgent || req.headers['user-agent'] || '',
         log.statusSeguranca || 'OK',
         log.dataHora || new Date().toISOString()
@@ -828,59 +835,75 @@ app.get('/api/usuarios', async (req, res) => {
 });
 
 app.post('/api/usuarios', async (req, res) => {
+  let conn: any;
   try {
-    const u = req.body;
-    const conn = await getDbConnection();
+    const u = req.body || {};
+    const nome = String(u.nome || '').trim();
+    const email = String(u.email || '').trim().toLowerCase();
+    const papel = u.perfil || u.papel || 'comercial';
+    if (!nome || !email) return res.status(400).json({ erro: 'Nome e e-mail são obrigatórios.' });
+
+    conn = await getDbConnection();
     const agora = new Date().toISOString();
 
-    let query = '';
-    let params: any[] = [];
-
-    if (u.senha) {
-      const hashed = await bcrypt.hash(u.senha, 10);
-      query = `
-        INSERT INTO usuarios (id, nome, email, senha, whatsapp, cargo, foto_url, slug, papel, status, pode_criar_secoes, criado_em) 
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON DUPLICATE KEY UPDATE 
-          nome = VALUES(nome),
-          senha = VALUES(senha),
-          whatsapp = VALUES(whatsapp),
-          cargo = VALUES(cargo),
-          foto_url = VALUES(foto_url),
-          slug = VALUES(slug),
-          papel = VALUES(papel),
-          status = VALUES(status),
-          pode_criar_secoes = VALUES(pode_criar_secoes)
-      `;
-      params = [u.id, u.nome, u.email, hashed, u.whatsapp || '', u.cargo || '', u.fotoUrl || '', u.slug || '', u.papel || 'comercial', u.status || 'ativo', u.podeCriarSecoes ? 1 : 0, agora];
-    } else {
-      query = `
-        INSERT INTO usuarios (id, nome, email, senha, whatsapp, cargo, foto_url, slug, papel, status, pode_criar_secoes, criado_em) 
-        VALUES (?, ?, ?, 'temp', ?, ?, ?, ?, ?, ?, ?, ?)
-        ON DUPLICATE KEY UPDATE 
-          nome = VALUES(nome),
-          whatsapp = VALUES(whatsapp),
-          cargo = VALUES(cargo),
-          foto_url = VALUES(foto_url),
-          slug = VALUES(slug),
-          papel = VALUES(papel),
-          status = VALUES(status),
-          pode_criar_secoes = VALUES(pode_criar_secoes)
-      `;
-      params = [u.id, u.nome, u.email, u.whatsapp || '', u.cargo || '', u.fotoUrl || '', u.slug || '', u.papel || 'comercial', u.status || 'ativo', u.podeCriarSecoes ? 1 : 0, agora];
+    // Verifica se o e-mail já pertence a OUTRO usuário
+    const [existentes]: any = await conn.query('SELECT id FROM usuarios WHERE LOWER(email) = ? LIMIT 1', [email]);
+    const existente = existentes && existentes[0];
+    const [porId]: any = u.id ? await conn.query('SELECT id FROM usuarios WHERE id = ? LIMIT 1', [u.id]) : [[]];
+    const isEdicao = !!(porId && porId[0]);
+    if (existente && existente.id !== u.id) {
+      await conn.end();
+      return res.status(409).json({ erro: 'Já existe um usuário cadastrado com este e-mail.' });
     }
 
-    await conn.query(query, params);
+    const id = u.id || `usr_${Date.now()}`;
+    const campos = [nome, email, u.whatsapp || '', u.cargo || '', u.fotoUrl || '', u.slug || '', papel, u.status || 'ativo', u.podeCriarSecoes ? 1 : 0];
+
+    if (isEdicao) {
+      await conn.query(
+        `UPDATE usuarios SET nome = ?, email = ?, whatsapp = ?, cargo = ?, foto_url = ?, slug = ?, papel = ?, status = ?, pode_criar_secoes = ? WHERE id = ?`,
+        [...campos, id]
+      );
+      if (u.senha) {
+        await conn.query('UPDATE usuarios SET senha = ? WHERE id = ?', [await bcrypt.hash(String(u.senha), 10), id]);
+      }
+    } else {
+      if (!u.senha) {
+        await conn.end();
+        return res.status(400).json({ erro: 'A senha é obrigatória para novos usuários.' });
+      }
+      const hash = await bcrypt.hash(String(u.senha), 10);
+      await conn.query(
+        `INSERT INTO usuarios (id, nome, email, whatsapp, cargo, foto_url, slug, papel, status, pode_criar_secoes, senha, criado_em)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [id, ...campos, hash, agora]
+      );
+    }
+
     await conn.query(
-      `INSERT INTO logs_auditoria (id, usuario_nome, acao, detalhes, data_hora) 
-       VALUES (?, 'Admin', 'EDICAO', 'Usuário salvo ou atualizado na equipe.', ?)`,
-      [`log_${Date.now()}`, agora]
+      `INSERT INTO logs_auditoria (id, usuario_nome, acao, detalhes, data_hora, ip)
+       VALUES (?, 'Admin', ?, ?, ?, ?)`,
+      [`log_${Date.now()}`, isEdicao ? 'EDICAO' : 'CRIACAO', `Usuário "${nome}" ${isEdicao ? 'atualizado' : 'criado'} na equipe.`, agora, getIp(req)]
     );
 
+    const [rows]: any = await conn.query(
+      'SELECT id, nome, email, whatsapp, cargo, foto_url, slug, papel, status, ultimo_login, pode_criar_secoes FROM usuarios WHERE id = ?',
+      [id]
+    );
     await conn.end();
-    return res.json({ success: true });
+    const r = rows[0];
+    return res.status(isEdicao ? 200 : 201).json({
+      success: true,
+      usuario: {
+        id: r.id, nome: r.nome, email: r.email, whatsapp: r.whatsapp || '', cargo: r.cargo || '',
+        fotoUrl: r.foto_url || '', slug: r.slug || '', papel: r.papel, perfil: r.papel, status: r.status,
+        ultimoLogin: r.ultimo_login, podeCriarSecoes: r.pode_criar_secoes === 1,
+      },
+    });
   } catch (err: any) {
-    return res.status(500).json({ error: err.message });
+    try { if (conn) await conn.end(); } catch (e) {}
+    console.error('Erro em POST /api/usuarios:', err);
+    return res.status(500).json({ erro: 'Erro ao salvar usuário: ' + err.message });
   }
 });
 
@@ -890,9 +913,9 @@ app.delete('/api/usuarios/:id', async (req, res) => {
     const conn = await getDbConnection();
     await conn.query('DELETE FROM usuarios WHERE id = ?', [id]);
     await conn.query(
-      `INSERT INTO logs_auditoria (id, usuario_nome, acao, detalhes, status_seguranca, data_hora) 
-       VALUES (?, 'Admin', 'EXCLUSAO', 'Usuário removido da equipe comercial.', 'ALERTA', ?)`,
-      [`log_${Date.now()}`, new Date().toISOString()]
+      `INSERT INTO logs_auditoria (id, usuario_nome, acao, detalhes, status_seguranca, data_hora, ip) 
+       VALUES (?, 'Admin', 'EXCLUSAO', 'Usuário removido da equipe comercial.', 'ALERTA', ?, ?)`,
+      [`log_${Date.now()}`, new Date().toISOString(), getIp(req)]
     );
     await conn.end();
     return res.json({ success: true });
@@ -904,6 +927,32 @@ app.delete('/api/usuarios/:id', async (req, res) => {
 // ==========================================
 // 5. MIDDLEWARE DE INSTALAÇÃO & ARQUIVOS ESTÁTICOS
 // ==========================================
+
+// ==========================================
+// UPLOAD DE IMAGENS (logo, fotos)
+// ==========================================
+const uploadDir = path.join(process.cwd(), 'public', 'uploads');
+if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
+const storage = multer.diskStorage({
+  destination: uploadDir,
+  filename: (req, file, cb) => cb(null, Date.now() + '-' + file.originalname.replace(/[^a-zA-Z0-9.-]/g, '_')),
+});
+const upload = multer({
+  storage,
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => cb(null, /^image\/(png|jpe?g|webp|gif|svg\+xml)$/i.test(file.mimetype)),
+});
+
+// Só permite upload depois que o sistema estiver instalado
+function authMiddleware(req: express.Request, res: express.Response, next: express.NextFunction) {
+  if (!fs.existsSync(LOCK_FILE)) return res.status(403).json({ erro: 'Sistema não instalado.' });
+  next();
+}
+
+app.post('/api/upload', authMiddleware, upload.single('arquivo'), (req, res) => {
+  if (!req.file) return res.status(400).json({ erro: 'Nenhum arquivo enviado (apenas imagens até 5 MB).' });
+  res.json({ url: '/uploads/' + req.file.filename });
+});
 
 // Arquivos internos do servidor nunca devem ser servidos publicamente
 const ARQUIVOS_PROTEGIDOS = /(^|\/)(db-config\.json|installed\.lock|server\.js|\.env.*)$/i;
@@ -923,6 +972,9 @@ app.use((req, res, next) => {
   }
   next();
 });
+
+// Arquivos públicos enviados (uploads) — servidos ANTES do frontend compilado
+app.use(express.static(path.join(process.cwd(), 'public'), { index: false }));
 
 // Servir frontend compilado (index: false para que "/" passe pelo catch-all abaixo)
 app.use(express.static(path.join(__dirname), { index: false }));

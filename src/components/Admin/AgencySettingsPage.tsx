@@ -51,25 +51,37 @@ export const AgencySettingsPage: React.FC<AgencySettingsPageProps> = ({
       return;
     }
 
-    const reader = new FileReader();
-    reader.onload = () => {
-      const url = reader.result as string;
-      setFormData(prev => ({
-        ...prev,
-        logoUrl: url,
-        capa: {
-          ...prev.capa,
+    // Envia o arquivo para o servidor (POST /api/upload) e salva a URL retornada em logoUrl
+    const formDataUpload = new FormData();
+    formDataUpload.append('arquivo', file);
+    fetch('/api/upload', { method: 'POST', body: formDataUpload })
+      .then(async res => {
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.url) throw new Error(data.erro || data.error || 'Falha no upload.');
+        const url = data.url as string;
+        setFormData(prev => ({
+          ...prev,
           logoUrl: url,
-        },
-      }));
-      setFeedback({
+          capa: {
+            ...prev.capa,
+            logoUrl: url,
+          },
+        }));
+        setFeedback({
         tipo: 'sucesso',
         titulo: 'Logo Carregada',
-        mensagem: 'O logotipo da agência foi atualizado.',
+        mensagem: 'Logo enviada ao servidor. Clique em Salvar para aplicar.',
         aberto: true,
       });
-    };
-    reader.readAsDataURL(file);
+      })
+      .catch(err => {
+        setFeedback({
+          tipo: 'erro',
+          titulo: 'Erro no Upload',
+          mensagem: err.message || 'Não foi possível enviar a imagem.',
+          aberto: true,
+        });
+      });
   };
 
   const handleSubmit = (e: React.FormEvent) => {

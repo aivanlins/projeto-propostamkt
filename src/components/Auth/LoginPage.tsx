@@ -1,18 +1,30 @@
-import React, { useState } from 'react';
-import { Lock, Mail, RefreshCw, AlertCircle, Loader2, ArrowRight } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { Lock, Mail, AlertCircle, Loader2, ArrowRight } from 'lucide-react';
 
 interface LoginPageProps {
   onLogin: (email: string, senha: string) => Promise<{ success: boolean; error?: string; reinstalar?: boolean }>;
-  onResetarInstalacao?: () => void;
 }
 
-export function LoginPage({ onLogin, onResetarInstalacao }: LoginPageProps) {
+export function LoginPage({ onLogin }: LoginPageProps) {
   const [email, setEmail] = useState('');
   const [senha, setSenha] = useState('');
   const [carregando, setCarregando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
-  const [mostrarReinstalar, setMostrarReinstalar] = useState(false);
   const [esqueceuAberto, setEsqueceuAberto] = useState(false);
+  const [agencia, setAgencia] = useState<{ logoUrl?: string; nomeAgencia?: string; corPrimaria?: string }>({});
+
+  // Logo dinâmica: busca a identidade da agência no endpoint público /api/config
+  useEffect(() => {
+    fetch('/api/config')
+      .then(res => (res.ok && (res.headers.get('content-type') || '').includes('application/json') ? res.json() : null))
+      .then(data => { if (data) setAgencia(data); })
+      .catch(() => {});
+  }, []);
+
+  const iniciaisAgencia = (agencia.nomeAgencia || 'Agência')
+    .trim().split(/\s+/).filter(Boolean)
+    .map((p, i, arr) => (i === 0 || i === arr.length - 1 ? p[0] : ''))
+    .join('').substring(0, 2).toUpperCase();
 
   const handleSubmit = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
@@ -28,29 +40,11 @@ export function LoginPage({ onLogin, onResetarInstalacao }: LoginPageProps) {
       const res = await onLogin(email, senha);
       if (!res.success) {
         setErro(res.error || 'Credenciais inválidas.');
-        if (res.reinstalar) {
-          setMostrarReinstalar(true);
-        }
       }
     } catch (err: any) {
       setErro(err.message || 'Erro ao comunicar com o servidor.');
     } finally {
       setCarregando(false);
-    }
-  };
-
-  const handleReset = async () => {
-    if (confirm('Deseja reiniciar a instalação do sistema? Isso permitirá reconfigurar o banco de dados MySQL e o super administrador.')) {
-      try {
-        await fetch('/api/reset-install', { method: 'POST' });
-      } catch (e) {}
-      localStorage.removeItem('sistema_instalado');
-      localStorage.removeItem('is_logado');
-      if (onResetarInstalacao) {
-        onResetarInstalacao();
-      } else {
-        window.location.reload();
-      }
     }
   };
 
@@ -60,9 +54,20 @@ export function LoginPage({ onLogin, onResetarInstalacao }: LoginPageProps) {
         
         {/* LOGO */}
         <div className="text-center mb-6">
-          <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-purple-700 to-amber-600 text-white font-black text-xl flex items-center justify-center mx-auto shadow-lg mb-3">
-            GC
-          </div>
+          {agencia.logoUrl ? (
+            <img
+              src={agencia.logoUrl}
+              alt={agencia.nomeAgencia || 'Logo da agência'}
+              className="h-14 max-w-[180px] object-contain mx-auto mb-3"
+            />
+          ) : (
+            <div
+              className="w-14 h-14 rounded-2xl text-white font-black text-xl flex items-center justify-center mx-auto shadow-lg mb-3"
+              style={{ backgroundColor: agencia.corPrimaria || '#6d28d9' }}
+            >
+              {iniciaisAgencia}
+            </div>
+          )}
           <h2 className="text-2xl font-black text-white tracking-tight">Login Administrativo</h2>
           <p className="text-xs text-zinc-400 mt-1">Acesso exclusivo para administradores e equipe</p>
         </div>
@@ -73,16 +78,6 @@ export function LoginPage({ onLogin, onResetarInstalacao }: LoginPageProps) {
             <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
             <div className="space-y-1">
               <div>{erro}</div>
-              {mostrarReinstalar && (
-                <button
-                  type="button"
-                  onClick={handleReset}
-                  className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-bold text-[11px] transition-colors cursor-pointer"
-                >
-                  <RefreshCw className="w-3 h-3" />
-                  Reiniciar Instalação do Banco
-                </button>
-              )}
             </div>
           </div>
         )}
@@ -150,15 +145,6 @@ export function LoginPage({ onLogin, onResetarInstalacao }: LoginPageProps) {
             Esqueceu a senha?
           </button>
 
-          <button
-            type="button"
-            onClick={handleReset}
-            className="hover:text-zinc-300 inline-flex items-center gap-1 transition-colors cursor-pointer"
-            title="Permite reiniciar a configuração do MySQL e super admin"
-          >
-            <RefreshCw className="w-3 h-3" />
-            <span>Reconfigurar Instalação</span>
-          </button>
         </div>
 
       </div>
@@ -169,7 +155,7 @@ export function LoginPage({ onLogin, onResetarInstalacao }: LoginPageProps) {
           <div className="bg-zinc-900 border border-zinc-800 p-6 rounded-3xl max-w-sm w-full space-y-4 text-center">
             <h3 className="text-lg font-bold text-white">Recuperação de Acesso</h3>
             <p className="text-xs text-zinc-400 leading-relaxed">
-              Por motivos de segurança e proteção dos dados de clientes, redefinições de senha do Super Admin são feitas diretamente no banco de dados MySQL via phpMyAdmin ou reiniciando o assistente de instalação.
+              Por motivos de segurança e proteção dos dados de clientes, redefinições de senha do Super Admin são feitas diretamente no banco de dados MySQL via phpMyAdmin. Fale com o administrador do sistema.
             </p>
             <div className="flex gap-2">
               <button
@@ -179,16 +165,7 @@ export function LoginPage({ onLogin, onResetarInstalacao }: LoginPageProps) {
               >
                 Fechar
               </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setEsqueceuAberto(false);
-                  handleReset();
-                }}
-                className="flex-1 py-2 px-4 rounded-xl bg-purple-700 hover:bg-purple-600 text-white text-xs font-bold"
-              >
-                Reiniciar Setup
-              </button>
+
             </div>
           </div>
         </div>

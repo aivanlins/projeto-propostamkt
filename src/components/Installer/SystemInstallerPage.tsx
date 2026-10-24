@@ -10,7 +10,6 @@ interface SystemInstallerPageProps {
   estadoInstalacao: EstadoInstalacao;
   config: ConfiguracaoFixa;
   onConcluirInstalacao: (novoEstado: EstadoInstalacao) => void;
-  onResetarInstalacaoParaTestes: () => void;
   onIrParaPainel: () => void;
 }
 
@@ -18,7 +17,6 @@ export const SystemInstallerPage: React.FC<SystemInstallerPageProps> = ({
   estadoInstalacao,
   config,
   onConcluirInstalacao,
-  onResetarInstalacaoParaTestes,
   onIrParaPainel,
 }) => {
   // Se o sistema já estiver instalado, exibe a tela de BLOQUEIO DE SEGURANÇA
@@ -62,14 +60,6 @@ export const SystemInstallerPage: React.FC<SystemInstallerPageProps> = ({
               <ArrowRight className="w-4 h-4" />
             </button>
 
-            <button
-              onClick={onResetarInstalacaoParaTestes}
-              className="inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl border border-zinc-300 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800 text-zinc-700 dark:text-zinc-300 text-xs font-semibold transition-colors cursor-pointer"
-              title="Permite reiniciar o fluxo do assistente para reconfigurar banco e super admin"
-            >
-              <RefreshCw className="w-3.5 h-3.5" />
-              Reiniciar Instalação (Remover Trava)
-            </button>
           </div>
         </div>
       </div>

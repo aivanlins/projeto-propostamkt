@@ -375,17 +375,19 @@ export default function App() {
     setModoAtual('admin');
   };
 
-  // Resetar Instalação
-  const handleResetarInstalacao = async () => {
-    try {
-      await fetch('/api/reset-install', { method: 'POST' });
-    } catch (e) {}
-    localStorage.removeItem('sistema_instalado');
+  // Logout: limpa a sessão e volta para a tela de login
+  const handleLogout = () => {
+    registrarLog('DESATIVACAO', `Logout efetuado por ${usuarioAtual.nome}.`);
     localStorage.removeItem('is_logado');
     localStorage.removeItem('gc_usuario_logado');
-    setInstalado(false);
+    localStorage.removeItem('gc_usuario_atual_id');
     setIsLogado(false);
-    setModoAtual('instalador');
+    setModoAtual('admin');
+    window.history.replaceState(null, '', '/login');
+  };
+
+  const handleAbrirPerfil = () => {
+    setCartaoPerfilAberto(usuarioAtual);
   };
 
   // Operações de Propostas conectadas ao MySQL
@@ -521,12 +523,23 @@ export default function App() {
     if (usuarioAtual.id === usuarioSalvo.id) setUsuarioAtual(usuarioSalvo);
     registrarLog('EDICAO', `Credenciais do usuário "${usuarioSalvo.nome}" salvas.`);
 
-    // Persistência no MySQL
+    // Persistência no MySQL (o servidor valida e-mail duplicado e gera o hash da senha)
     fetch('/api/usuarios', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(usuarioSalvo)
-    }).catch(err => console.error('Erro ao salvar usuário no MySQL:', err));
+    })
+      .then(async res => {
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.erro || data.error || 'Falha ao salvar usuário no banco.');
+        // Recarrega a lista real do banco
+        const lista = await fetch('/api/usuarios').then(r => (r.ok ? r.json() : null)).catch(() => null);
+        if (Array.isArray(lista) && lista.length > 0) setUsuarios(lista);
+      })
+      .catch(err => {
+        console.error('Erro ao salvar usuário no MySQL:', err);
+        alert('Não foi possível salvar o usuário no banco de dados: ' + err.message);
+      });
   };
 
   const handleAlternarStatusUsuario = (id: string, novoStatus: 'ativo' | 'bloqueado') => {
@@ -603,14 +616,12 @@ export default function App() {
           estadoInstalacao={{ ...estadoInstalacao, instalado: false }}
           config={config}
           onConcluirInstalacao={handleConcluirInstalacao}
-          onResetarInstalacaoParaTestes={handleResetarInstalacao}
           onIrParaPainel={() => setModoAtual('admin')}
         />
       ) : !isLogado ? (
         /* 2. SE NÃO ESTIVER LOGADO: TELA DE LOGIN OBRIGATÓRIA */
         <LoginPage
           onLogin={handleLogin}
-          onResetarInstalacao={handleResetarInstalacao}
         />
       ) : (
         /* 3. SISTEMA PRINCIPAL (ADMINISTRATIVO OU PORTAL DO CLIENTE) */
@@ -627,6 +638,9 @@ export default function App() {
               darkMode={darkMode}
               setDarkMode={setDarkMode}
               onNovaProposta={() => setModoAtual('criar_proposta')}
+              usuarioAtual={usuarioAtual}
+              onLogout={handleLogout}
+              onAbrirPerfil={handleAbrirPerfil}
             />
           )}
 
@@ -733,8 +747,7 @@ export default function App() {
                 estadoInstalacao={{ ...estadoInstalacao, instalado: true }}
                 config={config}
                 onConcluirInstalacao={handleConcluirInstalacao}
-                onResetarInstalacaoParaTestes={handleResetarInstalacao}
-                onIrParaPainel={() => setModoAtual('admin')}
+                      onIrParaPainel={() => setModoAtual('admin')}
               />
             )}
 
