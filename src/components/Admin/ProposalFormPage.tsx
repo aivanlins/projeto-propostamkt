@@ -1,3 +1,4 @@
+import { maskPhone } from '../../utils/masks';
 import React, { useState } from 'react';
 import { 
   ArrowLeft, Save, Plus, Trash2, Clock, Check, Sparkles, 
@@ -23,6 +24,7 @@ import {
   sanitizarTexto,
   validarUploadImagem 
 } from '../../utils/security';
+import { slugify, gerarSlugUnico, getBaseUrlApp, PREFIXO_URL_PROPOSTA } from '../../utils/propostaUrl';
 import { FeedbackPopup } from '../Common/FeedbackPopup';
 
 interface ProposalFormPageProps {
@@ -31,6 +33,8 @@ interface ProposalFormPageProps {
   usuarioAtual: Usuario;
   onSalvar: (proposta: Proposta) => void;
   onVoltar: () => void;
+  /** Usado para garantir que a URL personalizada (slug) seja única. */
+  propostasExistentes?: Proposta[];
 }
 
 // ZOD SCHEMA PARA VALIDAÇÃO DA PROPOSTA
@@ -51,6 +55,7 @@ export const ProposalFormPage: React.FC<ProposalFormPageProps> = ({
   usuarioAtual,
   onSalvar,
   onVoltar,
+  propostasExistentes = [],
 }) => {
   const isEdicao = !!propostaInicial;
 
@@ -63,6 +68,13 @@ export const ProposalFormPage: React.FC<ProposalFormPageProps> = ({
   const [clienteDocumento, setClienteDocumento] = useState(propostaInicial?.clienteDocumento || '');
   const [clienteSegmento, setClienteSegmento] = useState(propostaInicial?.clienteSegmento || 'Saúde / Odontologia');
   const [clienteInstagram, setClienteInstagram] = useState(propostaInicial?.clienteInstagram || '@');
+
+  // URL personalizada (/proposta-<slug>): gerada automaticamente até o usuário editar manualmente
+  const [slugEditadoManual, setSlugEditadoManual] = useState(!!propostaInicial?.slug);
+  const [slugDigitado, setSlugDigitado] = useState(propostaInicial?.slug || '');
+  const slugBase = slugEditadoManual ? slugDigitado : (clienteEmpresa || clienteNome);
+  const slugFinal = gerarSlugUnico(slugBase, propostasExistentes, propostaInicial?.id);
+  const slugEmConflito = slugEditadoManual && !!slugify(slugDigitado) && slugFinal !== slugify(slugDigitado);
 
   // Lâmina Projeto
   const [projetoTexto, setProjetoTexto] = useState(
@@ -286,6 +298,7 @@ export const ProposalFormPage: React.FC<ProposalFormPageProps> = ({
     const propostaPronta: Proposta = {
       id: propostaInicial?.id || `prop_${Date.now()}`,
       token: tokenSeguro,
+      slug: slugFinal,
       titulo: sanitizarTexto(titulo),
       clienteNome: sanitizarTexto(clienteNome),
       clienteEmpresa: sanitizarTexto(clienteEmpresa),
@@ -536,6 +549,36 @@ export const ProposalFormPage: React.FC<ProposalFormPageProps> = ({
                   />
                   {errosValidacao.clienteNome && <p className="text-xs text-rose-500 mt-1">{errosValidacao.clienteNome}</p>}
                 </div>
+
+                <div className="sm:col-span-2">
+                  <label className="block text-xs font-bold uppercase text-zinc-500 dark:text-zinc-400 mb-1">
+                    URL personalizada
+                  </label>
+                  <div className="flex items-stretch rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 overflow-hidden focus-within:ring-2 focus-within:ring-purple-600">
+                    <span className="hidden sm:flex items-center px-3 text-xs font-mono text-zinc-400 bg-zinc-50 dark:bg-zinc-900 border-r border-zinc-200 dark:border-zinc-800 whitespace-nowrap">
+                      {getBaseUrlApp().replace(/^https?:\/\//, '')}/{PREFIXO_URL_PROPOSTA}
+                    </span>
+                    <input
+                      type="text"
+                      value={slugEditadoManual ? slugDigitado : slugFinal}
+                      onChange={e => {
+                        setSlugEditadoManual(true);
+                        setSlugDigitado(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '-'));
+                      }}
+                      onBlur={() => {
+                        if (!slugify(slugDigitado)) { setSlugEditadoManual(false); setSlugDigitado(''); }
+                        else setSlugDigitado(slugify(slugDigitado));
+                      }}
+                      placeholder="nome-do-cliente"
+                      className="flex-1 min-w-0 px-4 py-3 bg-transparent text-sm font-mono text-zinc-900 dark:text-white outline-none"
+                    />
+                  </div>
+                  <p className="text-[11px] text-zinc-500 mt-1 break-all">
+                    Link final: <span className="font-mono text-purple-700 dark:text-purple-300">{getBaseUrlApp()}/{PREFIXO_URL_PROPOSTA}{slugFinal}</span>
+                    {slugEmConflito && <span className="text-amber-600"> (já em uso — ajustado automaticamente)</span>}
+                    {!slugEditadoManual && <span> • gerado a partir do nome da empresa</span>}
+                  </p>
+                </div>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -562,8 +605,9 @@ export const ProposalFormPage: React.FC<ProposalFormPageProps> = ({
                     type="text"
                     required
                     value={clienteTelefone}
-                    onChange={e => setClienteTelefone(e.target.value)}
-                    placeholder="Ex: +55 12 98111-2233"
+                    onChange={e => setClienteTelefone(maskPhone(e.target.value))}
+                    maxLength={17}
+                    placeholder="+55 11 99999-9999"
                     className="w-full px-4 py-3 rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 text-sm text-zinc-900 dark:text-white focus:ring-2 focus:ring-purple-600 outline-none"
                   />
                   {errosValidacao.clienteTelefone && <p className="text-xs text-rose-500 mt-1">{errosValidacao.clienteTelefone}</p>}

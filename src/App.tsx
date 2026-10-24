@@ -21,7 +21,7 @@ import {
   NotificacaoEmail,
   Usuario 
 } from './types';
-import { Phone, Mail, X, Download } from 'lucide-react';
+import { Phone, Mail, X, Download, Sun, Moon, Loader2, FileX } from 'lucide-react';
 import { Navbar, ModoVisualizacao } from './components/Navbar';
 import { ClientProposalView } from './components/ClientView/ClientProposalView';
 import { AdminDashboard } from './components/Admin/AdminDashboard';
@@ -30,15 +30,15 @@ import { CmsConfigEditor } from './components/Admin/CmsConfigEditor';
 import { SystemInstallerPage } from './components/Installer/SystemInstallerPage';
 import { SecurityLogs } from './components/Admin/SecurityLogs';
 import { CpanelDeploymentKit } from './components/DeploymentKit/CpanelDeploymentKit';
-import { SimulationBar } from './components/SimulationBar';
-import { UserManagementModal } from './components/Admin/UserManagementModal';
+import { TeamManagementPage } from './components/Admin/TeamManagementPage';
 import { AgencySettingsPage } from './components/Admin/AgencySettingsPage';
 import { LoginPage } from './components/Auth/LoginPage';
+import { RedefinirSenhaPage } from './components/Auth/RedefinirSenhaPage';
 import { baixarVCard } from './utils/security';
+import { detectarRotaPublica, gerarSlugUnico } from './utils/propostaUrl';
 
 export default function App() {
   const [cartaoPerfilAberto, setCartaoPerfilAberto] = useState<Usuario | null>(null);
-  const [userModalAberto, setUserModalAberto] = useState(false);
 
   // Usuários do sistema
   const [usuarios, setUsuarios] = useState<Usuario[]>(() => {
@@ -118,7 +118,26 @@ export default function App() {
   const [modoAtual, setModoAtual] = useState<ModoVisualizacao>('cliente');
   const [propostaSelecionada, setPropostaSelecionada] = useState<Proposta>(propostas[0]);
   const [propostaEmEdicao, setPropostaEmEdicao] = useState<Proposta | null>(null);
-  const [isAcessoDiretoCliente, setIsAcessoDiretoCliente] = useState<boolean>(false);
+  // Página pública da proposta (/proposta-<slug> ou ?token=...): sem login, sem menus do sistema
+  const [rotaPublica] = useState(detectarRotaPublica);
+  // Cartão digital público (/u/<slug>)
+  const [slugCartaoPublico] = useState(() => {
+    const m = window.location.pathname.match(/\/(?:u|cartao)\/([a-z0-9_-]+)\/?$/i);
+    return m ? m[1].toLowerCase() : null;
+  });
+  const [cartaoPublico, setCartaoPublico] = useState<Usuario | null>(null);
+  const [cartaoPublicoStatus, setCartaoPublicoStatus] = useState<'carregando' | 'ok' | 'nao_encontrado'>('carregando');
+  useEffect(() => {
+    if (!slugCartaoPublico) return;
+    fetch(`/api/usuario/cartao/${encodeURIComponent(slugCartaoPublico)}`)
+      .then(r => (r.ok && (r.headers.get('content-type') || '').includes('json') ? r.json() : null))
+      .catch(() => null)
+      .then(u => {
+        if (u && u.id) { setCartaoPublico(u as Usuario); setCartaoPublicoStatus('ok'); document.title = u.nome; }
+        else setCartaoPublicoStatus('nao_encontrado');
+      });
+  }, [slugCartaoPublico]);
+  const [statusPublico, setStatusPublico] = useState<'carregando' | 'ok' | 'nao_encontrada'>(rotaPublica ? 'carregando' : 'ok');
   const [darkMode, setDarkMode] = useState<boolean>(() => localStorage.getItem('gc_dark_mode') === 'true');
 
   // Gerenciamento de Autenticação e Instalação
@@ -140,6 +159,7 @@ export default function App() {
 
   // Hidratar dados completos do MySQL sempre que o usuário estiver autenticado ou o sistema estiver pronto
   useEffect(() => {
+    if (rotaPublica) return; // Página pública do cliente não carrega dados administrativos
     if (isLogado || instalado) {
       // 1. Configuração da Agência
       fetch('/api/config')
@@ -210,38 +230,9 @@ export default function App() {
     }
   }, [darkMode]);
 
-  // Checagem de token público de cliente via URL (?token=...) conectado à API do MySQL
+  // Link de cartão de perfil (?perfil=slug)
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const tokenParam = params.get('token');
-    if (tokenParam) {
-      // Tenta buscar diretamente do backend MySQL para garantir dados em tempo real
-      fetch(`/api/proposta/token/${tokenParam}`)
-        .then(res => res.json())
-        .then(propReal => {
-          if (propReal && propReal.id) {
-            setPropostaSelecionada(propReal);
-            setModoAtual('cliente');
-            setIsAcessoDiretoCliente(true);
-          } else {
-            const encontrada = propostas.find(p => p.token === tokenParam);
-            if (encontrada) {
-              setPropostaSelecionada(encontrada);
-              setModoAtual('cliente');
-              setIsAcessoDiretoCliente(true);
-            }
-          }
-        })
-        .catch(() => {
-          const encontrada = propostas.find(p => p.token === tokenParam);
-          if (encontrada) {
-            setPropostaSelecionada(encontrada);
-            setModoAtual('cliente');
-            setIsAcessoDiretoCliente(true);
-          }
-        });
-    }
-
     const perfilParam = params.get('perfil');
     if (perfilParam) {
       const usuarioEncontrado = usuarios.find(
@@ -252,6 +243,58 @@ export default function App() {
       }
     }
   }, [propostas, usuarios]);
+
+  // Carrega a proposta pública pela URL amigável (/proposta-<slug>) ou pelo link legado (?token=)
+  useEffect(() => {
+    if (!rotaPublica) return;
+    const lerJson = async (res: Response) => {
+      const tipo = res.headers.get('content-type') || '';
+      if (!res.ok || !tipo.includes('application/json')) return null;
+      return res.json();
+    };
+
+    // Identidade visual da agência (endpoint público)
+    fetch('/api/config')
+      .then(lerJson)
+      .then(data => {
+        if (data && data.nomeAgencia) {
+          setConfig(prev => ({
+            ...prev,
+            ...data,
+            capa: { ...prev.capa, ...(data.capa || {}) },
+            fundadores: { ...prev.fundadores, ...(data.fundadores || {}) },
+            premiacao: { ...prev.premiacao, ...(data.premiacao || {}) },
+            time: { ...prev.time, ...(data.time || {}) },
+            servicosInstitucionais: data.servicosInstitucionais || prev.servicosInstitucionais,
+            clientesApresentados: data.clientesApresentados || prev.clientesApresentados,
+            secoesOrdem: Array.isArray(data.secoesOrdem) && data.secoesOrdem.length > 0 ? data.secoesOrdem : prev.secoesOrdem,
+          }));
+        }
+      })
+      .catch(() => {});
+
+    const rota = rotaPublica.tipo === 'slug'
+      ? `/api/proposta/slug/${encodeURIComponent(rotaPublica.valor)}`
+      : `/api/proposta/token/${encodeURIComponent(rotaPublica.valor)}`;
+
+    const buscarLocal = () =>
+      propostas.find(p => rotaPublica.tipo === 'slug' ? p.slug === rotaPublica.valor : p.token === rotaPublica.valor);
+
+    fetch(rota)
+      .then(lerJson)
+      .then(prop => prop && prop.id ? prop : buscarLocal())
+      .catch(() => buscarLocal())
+      .then(prop => {
+        if (prop) {
+          setPropostaSelecionada(prop);
+          setStatusPublico('ok');
+          document.title = `${prop.titulo} • ${prop.clienteEmpresa}`;
+        } else {
+          setStatusPublico('nao_encontrada');
+        }
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rotaPublica]);
 
   // Persistência local (cache)
   useEffect(() => { localStorage.setItem('gc_usuarios', JSON.stringify(usuarios)); }, [usuarios]);
@@ -349,21 +392,27 @@ export default function App() {
     setModoAtual('admin');
   };
 
-  // Resetar Instalação
-  const handleResetarInstalacao = async () => {
-    try {
-      await fetch('/api/reset-install', { method: 'POST' });
-    } catch (e) {}
-    localStorage.removeItem('sistema_instalado');
+  // Logout: limpa a sessão e volta para a tela de login
+  const handleLogout = () => {
+    registrarLog('DESATIVACAO', `Logout efetuado por ${usuarioAtual.nome}.`);
     localStorage.removeItem('is_logado');
     localStorage.removeItem('gc_usuario_logado');
-    setInstalado(false);
+    localStorage.removeItem('gc_usuario_atual_id');
     setIsLogado(false);
-    setModoAtual('instalador');
+    setModoAtual('admin');
+    window.history.replaceState(null, '', '/login');
+  };
+
+  const handleAbrirPerfil = () => {
+    setCartaoPerfilAberto(usuarioAtual);
   };
 
   // Operações de Propostas conectadas ao MySQL
-  const handleSalvarProposta = (propostaSalva: Proposta) => {
+  const handleSalvarProposta = (propostaRecebida: Proposta) => {
+    // Garante a URL amigável (/proposta-<slug>) para toda proposta salva
+    const propostaSalva: Proposta = propostaRecebida.slug
+      ? propostaRecebida
+      : { ...propostaRecebida, slug: gerarSlugUnico(propostaRecebida.clienteEmpresa || propostaRecebida.clienteNome, propostas, propostaRecebida.id) };
     const existe = propostas.some(p => p.id === propostaSalva.id);
     let novas: Proposta[];
     if (existe) {
@@ -426,9 +475,21 @@ export default function App() {
     }).catch(err => console.error('Erro ao excluir proposta no MySQL:', err));
   };
 
-  const handleVisualizarComoCliente = (proposta: Proposta) => {
-    setPropostaSelecionada(proposta);
-    setModoAtual('cliente');
+  // Propostas antigas (sem slug) recebem a URL amigável na primeira vez que forem compartilhadas
+  const handleGarantirSlug = (proposta: Proposta): Proposta => {
+    if (proposta.slug) return proposta;
+    const atualizada: Proposta = {
+      ...proposta,
+      slug: gerarSlugUnico(proposta.clienteEmpresa || proposta.clienteNome, propostas, proposta.id),
+    };
+    setPropostas(prev => prev.map(p => (p.id === atualizada.id ? atualizada : p)));
+    if (propostaSelecionada?.id === atualizada.id) setPropostaSelecionada(atualizada);
+    fetch('/api/propostas', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(atualizada)
+    }).catch(err => console.error('Erro ao salvar URL da proposta no MySQL:', err));
+    return atualizada;
   };
 
   const handleAceitarProposta = (nomeResponsavel: string, documento: string) => {
@@ -479,12 +540,30 @@ export default function App() {
     if (usuarioAtual.id === usuarioSalvo.id) setUsuarioAtual(usuarioSalvo);
     registrarLog('EDICAO', `Credenciais do usuário "${usuarioSalvo.nome}" salvas.`);
 
-    // Persistência no MySQL
+    // Persistência no MySQL (o servidor valida e-mail duplicado e gera o hash da senha)
     fetch('/api/usuarios', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(usuarioSalvo)
-    }).catch(err => console.error('Erro ao salvar usuário no MySQL:', err));
+    })
+      .then(async res => {
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.erro || data.error || 'Falha ao salvar usuário no banco.');
+        // Recarrega a lista real do banco
+        const lista = await fetch('/api/usuarios').then(r => (r.ok ? r.json() : null)).catch(() => null);
+        if (Array.isArray(lista) && lista.length > 0) setUsuarios(lista);
+      })
+      .catch(err => {
+        console.error('Erro ao salvar usuário no MySQL:', err);
+        alert('Não foi possível salvar o usuário no banco de dados: ' + err.message);
+      });
+  };
+
+  const handleExcluirUsuario = (id: string) => {
+    const removido = usuarios.find(u => u.id === id);
+    setUsuarios(prev => prev.filter(u => u.id !== id));
+    if (removido) registrarLog('EXCLUSAO', `Usuário "${removido.nome}" excluído da equipe.`, undefined, 'ALERTA');
+    fetch(`/api/usuarios/${id}`, { method: 'DELETE' }).catch(err => console.error('Erro ao excluir usuário no MySQL:', err));
   };
 
   const handleAlternarStatusUsuario = (id: string, novoStatus: 'ativo' | 'bloqueado') => {
@@ -508,7 +587,88 @@ export default function App() {
     }
   };
 
-  const esconderBarrasSistema = isAcessoDiretoCliente && modoAtual === 'cliente';
+  const botaoTema = (
+    <button
+      type="button"
+      onClick={() => setDarkMode(!darkMode)}
+      className="p-2 rounded-full border border-zinc-200 dark:border-zinc-700 bg-white/90 dark:bg-zinc-900/90 text-zinc-700 dark:text-zinc-200 shadow-md hover:scale-105 transition-transform backdrop-blur-sm"
+      title={darkMode ? 'Ativar modo claro' : 'Ativar modo escuro'}
+      aria-label={darkMode ? 'Ativar modo claro' : 'Ativar modo escuro'}
+    >
+      {darkMode ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+    </button>
+  );
+
+  // PÁGINA PÚBLICA DO CLIENTE: sem login, sem menu, sem barras do sistema
+  // Rota pública de redefinição de senha
+  if (window.location.pathname.replace(/\/+$/, '').endsWith('/redefinir-senha')) {
+    return <RedefinirSenhaPage />;
+  }
+
+  // Cartão digital público (/u/<slug>)
+  if (slugCartaoPublico) {
+    const u = cartaoPublico;
+    return (
+      <div className="min-h-screen flex items-center justify-center p-4 bg-zinc-950 text-white">
+        {cartaoPublicoStatus === 'carregando' && <Loader2 className="w-6 h-6 animate-spin text-purple-500" />}
+        {cartaoPublicoStatus === 'nao_encontrado' && <p className="text-sm text-zinc-400">Cartão não encontrado.</p>}
+        {u && (
+          <div className="bg-zinc-900 p-6 rounded-3xl max-w-md w-full border border-zinc-800 text-center space-y-4">
+            {u.fotoUrl
+              ? <img src={u.fotoUrl} alt={u.nome} className="w-24 h-24 rounded-full object-cover mx-auto border-2 border-purple-500" />
+              : <div className="w-24 h-24 rounded-full mx-auto bg-purple-600 flex items-center justify-center text-3xl font-black">{u.nome.slice(0, 1).toUpperCase()}</div>}
+            <h1 className="text-xl font-bold">{u.nome}</h1>
+            <p className="text-xs text-amber-400">{u.cargo || 'Consultor Comercial'}</p>
+            {config.nomeAgencia && <p className="text-xs text-zinc-400">{config.nomeAgencia}</p>}
+            <div className="p-4 bg-zinc-800 rounded-2xl text-xs text-left space-y-2">
+              {u.whatsapp && (
+                <a href={`https://wa.me/${u.whatsapp.replace(/\D/g, '')}`} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 hover:underline">
+                  <Phone className="w-4 h-4 text-emerald-400" /><span>{u.whatsapp}</span>
+                </a>
+              )}
+              <a href={`mailto:${u.email}`} className="flex items-center gap-2 hover:underline">
+                <Mail className="w-4 h-4 text-blue-400" /><span>{u.email}</span>
+              </a>
+            </div>
+            <button onClick={() => baixarVCard(u)} className="w-full py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-xs font-bold flex items-center justify-center gap-1.5">
+              <Download className="w-3.5 h-3.5" /> Salvar Contato
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  if (rotaPublica) {
+    return (
+      <div className="min-h-screen bg-zinc-50 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 font-sans transition-colors duration-200">
+        {statusPublico === 'carregando' && (
+          <div className="min-h-screen flex flex-col items-center justify-center gap-3 text-sm text-zinc-500">
+            <Loader2 className="w-6 h-6 animate-spin text-purple-600" />
+            Carregando proposta...
+          </div>
+        )}
+        {statusPublico === 'nao_encontrada' && (
+          <div className="min-h-screen flex flex-col items-center justify-center gap-3 p-6 text-center">
+            <div className="fixed top-3 right-4 z-50">{botaoTema}</div>
+            <FileX className="w-10 h-10 text-zinc-400" />
+            <h1 className="text-xl font-bold">Proposta não encontrada</h1>
+            <p className="text-sm text-zinc-500 max-w-sm">
+              O link pode estar incorreto ou a proposta foi removida. Entre em contato com {config.nomeAgencia || 'a agência'} para receber um novo link.
+            </p>
+          </div>
+        )}
+        {statusPublico === 'ok' && (
+          <ClientProposalView
+            proposta={propostaSelecionada}
+            config={config}
+            onAceitarProposta={handleAceitarProposta}
+            acaoTopoDireita={botaoTema}
+          />
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-zinc-50 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 flex flex-col font-sans transition-colors duration-200">
@@ -519,20 +679,18 @@ export default function App() {
           estadoInstalacao={{ ...estadoInstalacao, instalado: false }}
           config={config}
           onConcluirInstalacao={handleConcluirInstalacao}
-          onResetarInstalacaoParaTestes={handleResetarInstalacao}
           onIrParaPainel={() => setModoAtual('admin')}
         />
-      ) : !isLogado && !isAcessoDiretoCliente ? (
-        /* 2. SE NÃO ESTIVER LOGADO (E NÃO FOR CLIENTE COM TOKEN): TELA DE LOGIN OBRIGATÓRIA */
+      ) : !isLogado ? (
+        /* 2. SE NÃO ESTIVER LOGADO: TELA DE LOGIN OBRIGATÓRIA */
         <LoginPage
           onLogin={handleLogin}
-          onResetarInstalacao={handleResetarInstalacao}
         />
       ) : (
         /* 3. SISTEMA PRINCIPAL (ADMINISTRATIVO OU PORTAL DO CLIENTE) */
         <>
           {/* BARRA SUPERIOR DE NAVEGAÇÃO */}
-          {!esconderBarrasSistema && (
+          {isLogado && (
             <Navbar
               modoAtual={modoAtual}
               setModoAtual={setModoAtual}
@@ -543,6 +701,9 @@ export default function App() {
               darkMode={darkMode}
               setDarkMode={setDarkMode}
               onNovaProposta={() => setModoAtual('criar_proposta')}
+              usuarioAtual={usuarioAtual}
+              onLogout={handleLogout}
+              onAbrirPerfil={handleAbrirPerfil}
             />
           )}
 
@@ -554,11 +715,7 @@ export default function App() {
               <ClientProposalView
                 proposta={propostaSelecionada}
                 config={config}
-                onVoltarParaPainel={() => {
-                  setIsAcessoDiretoCliente(false);
-                  setModoAtual('admin');
-                }}
-                onSimularAtivacao={() => {}}
+                onVoltarParaPainel={() => setModoAtual('admin')}
                 onAceitarProposta={handleAceitarProposta}
               />
             )}
@@ -578,9 +735,9 @@ export default function App() {
                   }}
                   onAlternarStatus={handleAlternarStatus}
                   onExcluirProposta={handleExcluirProposta}
-                  onVisualizarComoCliente={handleVisualizarComoCliente}
+                  onGarantirSlug={handleGarantirSlug}
                   onRegistrarEnvioEmail={handleRegistrarEnvioEmail}
-                  onAbrirGerenciadorUsuarios={() => setUserModalAberto(true)}
+                  onAbrirGerenciadorUsuarios={() => setModoAtual('equipe')}
                 />
               </div>
             )}
@@ -593,6 +750,7 @@ export default function App() {
                 usuarioAtual={usuarioAtual}
                 onSalvar={handleSalvarProposta}
                 onVoltar={() => setModoAtual('admin')}
+                propostasExistentes={propostas}
               />
             )}
 
@@ -604,6 +762,7 @@ export default function App() {
                 usuarioAtual={usuarioAtual}
                 onSalvar={handleSalvarProposta}
                 onVoltar={() => setModoAtual('admin')}
+                propostasExistentes={propostas}
               />
             )}
 
@@ -629,6 +788,17 @@ export default function App() {
             )}
 
             {/* AUDITORIA SIEM */}
+            {/* EQUIPE COMERCIAL (página dedicada) */}
+            {isLogado && modoAtual === 'equipe' && (
+              <TeamManagementPage
+                usuarios={usuarios}
+                usuarioAtual={usuarioAtual}
+                onSalvarUsuario={handleSalvarUsuario}
+                onAlternarStatusUsuario={handleAlternarStatusUsuario}
+                onExcluirUsuario={handleExcluirUsuario}
+              />
+            )}
+
             {isLogado && modoAtual === 'seguranca' && (
               <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
                 <SecurityLogs
@@ -651,38 +821,15 @@ export default function App() {
                 estadoInstalacao={{ ...estadoInstalacao, instalado: true }}
                 config={config}
                 onConcluirInstalacao={handleConcluirInstalacao}
-                onResetarInstalacaoParaTestes={handleResetarInstalacao}
-                onIrParaPainel={() => setModoAtual('admin')}
+                      onIrParaPainel={() => setModoAtual('admin')}
               />
             )}
 
           </div>
 
-          {/* BARRA DE TESTES & CONTROLE (ADMIN) */}
-          {isLogado && !esconderBarrasSistema && (
-            <SimulationBar
-              propostaAtual={propostaSelecionada}
-              onSelecionarPorStatus={() => {}}
-              onExpirarImediatamente={() => {}}
-              onRenovarValidade={() => {}}
-              usuarioAtual={usuarioAtual}
-              usuarios={usuarios}
-              onTrocarUsuario={u => setUsuarioAtual(u)}
-            />
-          )}
         </>
       )}
 
-      {/* MODAL DE USUÁRIOS */}
-      {userModalAberto && (
-        <UserManagementModal
-          usuarios={usuarios}
-          usuarioAtual={usuarioAtual}
-          onSalvarUsuario={handleSalvarUsuario}
-          onAlternarStatusUsuario={handleAlternarStatusUsuario}
-          onFechar={() => setUserModalAberto(false)}
-        />
-      )}
 
       {/* MODAL CARTÃO DE CONTATO */}
       {cartaoPerfilAberto && (

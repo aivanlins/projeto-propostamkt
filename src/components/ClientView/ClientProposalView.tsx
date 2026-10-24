@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { 
   Calendar, Clock, CheckCircle2, ShieldCheck, 
-  MessageSquare, Sparkles, Building2, User, Mail, Phone,
+  MessageSquare, Sparkles, User, Mail, Phone,
   CreditCard, Award, ChevronRight, Lock, Check, Instagram, 
   Video, Camera, FileCheck, CheckSquare, XCircle, ArrowRight,
   ExternalLink, Layers, AlignLeft, List, MousePointerClick,
@@ -24,6 +24,8 @@ interface ClientProposalViewProps {
   onVoltarParaPainel?: () => void;
   onSimularAtivacao?: () => void;
   onAceitarProposta?: (nomeResponsavel: string, documento: string) => void;
+  /** Conteúdo fixo no canto superior direito (ex.: botão de tema claro/escuro). */
+  acaoTopoDireita?: React.ReactNode;
 }
 
 export const ClientProposalView: React.FC<ClientProposalViewProps> = ({
@@ -32,6 +34,7 @@ export const ClientProposalView: React.FC<ClientProposalViewProps> = ({
   onVoltarParaPainel,
   onSimularAtivacao,
   onAceitarProposta,
+  acaoTopoDireita,
 }) => {
   const statusUrl = verificarStatusExpiraUrl(proposta);
 
@@ -1437,10 +1440,9 @@ export const ClientProposalView: React.FC<ClientProposalViewProps> = ({
     if (!nativo) return null;
 
     if (secaoItem.linhas && secaoItem.linhas.length > 0) {
-      return (
-        <div key={secaoItem.id} className="space-y-4 mb-8">
-          {nativo}
-          <div className="bg-white dark:bg-zinc-900 rounded-3xl p-6 sm:p-8 border border-zinc-200 dark:border-zinc-800 shadow-sm space-y-6">
+      // Colunas/widgets extras são renderizados DENTRO da seção pai (antes saíam num bloco separado)
+      const extras = (
+          <div key={`${secaoItem.id}_extras`} className="relative z-10 mt-6 pt-6 border-t border-black/5 dark:border-white/10">
             <div className="space-y-6">
               {secaoItem.linhas.map((linha, lIdx) => (
                 <div 
@@ -1475,8 +1477,12 @@ export const ClientProposalView: React.FC<ClientProposalViewProps> = ({
               ))}
             </div>
           </div>
-        </div>
       );
+      if (React.isValidElement(nativo)) {
+        const el = nativo as React.ReactElement<{ children?: React.ReactNode }>;
+        return React.cloneElement(el, undefined, el.props.children, extras);
+      }
+      return <div key={secaoItem.id}>{nativo}{extras}</div>;
     }
 
     return nativo;
@@ -1522,6 +1528,9 @@ export const ClientProposalView: React.FC<ClientProposalViewProps> = ({
                 <Check className="w-3.5 h-3.5" />
                 Aprovada
               </span>
+            )}
+            {acaoTopoDireita && (
+              <div className="xl:fixed xl:top-2 xl:right-4 xl:z-50">{acaoTopoDireita}</div>
             )}
           </div>
         </div>
@@ -1651,19 +1660,6 @@ export const ClientProposalView: React.FC<ClientProposalViewProps> = ({
           </div>
         </footer>
       </main>
-
-      {/* DISCRETO BOTÃO FLUTUANTE PARA RETORNAR AO PAINEL (CASO SEJA O ADMIN/CONSULTOR) */}
-      {onVoltarParaPainel && (
-        <button
-          type="button"
-          onClick={onVoltarParaPainel}
-          className="fixed bottom-4 right-4 z-40 bg-zinc-900/90 dark:bg-white/90 text-white dark:text-zinc-900 px-4 py-2 rounded-full text-xs font-bold shadow-xl hover:scale-105 transition-transform backdrop-blur-sm flex items-center gap-1.5 opacity-70 hover:opacity-100"
-          title="Acesso rápido ao Painel Administrativo"
-        >
-          <Building2 className="w-3.5 h-3.5" />
-          <span>Painel Comercial</span>
-        </button>
-      )}
 
       {/* MODAL DE ACEITE DIGITAL */}
       {modalAceiteAberto && (

@@ -1,9 +1,9 @@
 import React from 'react';
-import { 
-  Building2, LayoutDashboard, Palette, ShieldCheck, 
-  Server, Eye, Moon, Sun, Download, HardDrive, Plus, Sparkles 
+import { Users, 
+  Building2, LayoutDashboard, Palette, ShieldCheck, Moon, Sun
 } from 'lucide-react';
-import { Proposta, ConfiguracaoFixa } from '../types';
+import { Proposta, ConfiguracaoFixa, Usuario } from '../types';
+import { UserAvatarMenu } from './UserAvatarMenu';
 
 export type ModoVisualizacao = 
   | 'cliente' 
@@ -14,6 +14,7 @@ export type ModoVisualizacao =
   | 'agencia'
   | 'instalador' 
   | 'seguranca' 
+  | 'equipe' 
   | 'cpanel';
 
 interface NavbarProps {
@@ -26,6 +27,9 @@ interface NavbarProps {
   darkMode: boolean;
   setDarkMode: (dark: boolean) => void;
   onNovaProposta: () => void;
+  usuarioAtual: Usuario;
+  onLogout: () => void;
+  onAbrirPerfil: () => void;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -38,6 +42,9 @@ export const Navbar: React.FC<NavbarProps> = ({
   darkMode,
   setDarkMode,
   onNovaProposta,
+  usuarioAtual,
+  onLogout,
+  onAbrirPerfil,
 }) => {
   return (
     <nav className="bg-white dark:bg-zinc-900 border-b border-zinc-200 dark:border-zinc-800 sticky top-0 z-50 shadow-xs transition-colors">
@@ -46,7 +53,7 @@ export const Navbar: React.FC<NavbarProps> = ({
           
           {/* LOGO & NOME DA AGÊNCIA */}
           <div 
-            onClick={() => setModoAtual('cliente')}
+            onClick={() => setModoAtual('admin')}
             className="flex items-center gap-3 shrink-0 cursor-pointer"
           >
             {config.logoUrl ? (
@@ -76,13 +83,11 @@ export const Navbar: React.FC<NavbarProps> = ({
           {/* MENU PRINCIPAL DE NAVEGAÇÃO ENTRE MÓDULOS */}
           <div className="hidden lg:flex items-center gap-1 bg-zinc-100 dark:bg-zinc-800/80 p-1 rounded-2xl">
             {[
-              { id: 'cliente', label: 'Portal Cliente', icon: Eye },
               { id: 'admin', label: 'Dashboard & KPIs', icon: LayoutDashboard },
               { id: 'cms', label: 'CMS & Seções', icon: Palette },
               { id: 'agencia', label: 'Identidade & Agência', icon: Building2 },
-              { id: 'instalador', label: 'Instalação (Setup)', icon: HardDrive },
+              { id: 'equipe', label: 'Equipe Comercial', icon: Users },
               { id: 'seguranca', label: 'Auditoria SIEM', icon: ShieldCheck },
-              { id: 'cpanel', label: 'Kit cPanel / PHP', icon: Server },
             ].map(item => {
               const Icon = item.icon;
               const ativo = modoAtual === item.id || 
@@ -107,25 +112,6 @@ export const Navbar: React.FC<NavbarProps> = ({
           {/* SELETOR RÁPIDO & AÇÕES */}
           <div className="flex items-center gap-2">
             
-            {/* Seletor rápido de proposta */}
-            <div className="relative">
-              <select
-                value={propostaSelecionada?.id}
-                onChange={e => {
-                  const encontrada = propostas.find(p => p.id === e.target.value);
-                  if (encontrada) setPropostaSelecionada(encontrada);
-                }}
-                className="text-xs font-semibold px-2.5 py-1.5 rounded-xl border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800 text-zinc-800 dark:text-zinc-200 focus:outline-none max-w-[140px] sm:max-w-[190px] truncate"
-                title="Selecione a proposta em exibição"
-              >
-                {propostas.map(p => (
-                  <option key={p.id} value={p.id}>
-                    {p.status === 'ativo' ? '🟢' : p.status === 'expirado' ? '🔴' : '🟡'} {p.clienteEmpresa}
-                  </option>
-                ))}
-              </select>
-            </div>
-
             {/* BOTÃO CLARO E ESCURO (TOTALMENTE FUNCIONAL) */}
             <button
               type="button"
@@ -136,19 +122,20 @@ export const Navbar: React.FC<NavbarProps> = ({
             >
               {darkMode ? <Sun className="w-4 h-4 text-amber-400" /> : <Moon className="w-4 h-4 text-purple-700" />}
             </button>
+
+            {/* AVATAR DO USUÁRIO COM MENU (PERFIL / SAIR) */}
+            <UserAvatarMenu usuario={usuarioAtual} onLogout={onLogout} onAbrirPerfil={onAbrirPerfil} />
           </div>
         </div>
 
         {/* NAVEGAÇÃO MOBILE */}
         <div className="flex lg:hidden items-center justify-between overflow-x-auto py-2 gap-1 border-t border-zinc-100 dark:border-zinc-800 text-xs">
           {[
-            { id: 'cliente', label: 'Cliente' },
             { id: 'admin', label: 'Dashboard' },
             { id: 'cms', label: 'CMS' },
             { id: 'agencia', label: 'Agência & Cores' },
-            { id: 'instalador', label: 'Instalação' },
+            { id: 'equipe', label: 'Equipe' },
             { id: 'seguranca', label: 'Auditoria' },
-            { id: 'cpanel', label: 'cPanel' },
           ].map(item => (
             <button
               key={item.id}

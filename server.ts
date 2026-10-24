@@ -6,10 +6,19 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import bcrypt from 'bcryptjs';
+import crypto from 'crypto';
+import nodemailer from 'nodemailer';
+import multer from 'multer';
 
 dotenv.config();
 
 const app = express();
+app.set('trust proxy', 1);
+
+// IP real do cliente (atrás de proxy/cPanel)
+function getIp(req: express.Request): string {
+  return req.headers['x-forwarded-for']?.toString().split(',')[0].trim() ?? req.ip ?? '0.0.0.0';
+}
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const LOCK_FILE = path.join(__dirname, 'installed.lock');
 const DB_CONFIG_FILE = path.join(__dirname, 'db-config.json');
@@ -39,6 +48,66 @@ function getDbConfig() {
   }
 
   return null;
+}
+
+// Migração segura: adiciona a coluna "slug" (URL amigável) em instalações antigas.
+// Executa no máximo uma vez com sucesso por processo; falhas não interrompem o sistema.
+let colunaSlugVerificada = false;
+async function garantirColunaSlug(conn: any) {
+  if (colunaSlugVerificada) return;
+  try {
+    const [cols]: any = await conn.query("SHOW COLUMNS FROM propostas LIKE 'slug'");
+    if (!cols || cols.length === 0) {
+      await conn.query('ALTER TABLE propostas ADD COLUMN slug VARCHAR(120) DEFAULT NULL');
+    }
+    colunaSlugVerificada = true;
+  } catch (e: any) {
+    console.error('Aviso: não foi possível verificar/criar a coluna slug em propostas:', e.message);
+  }
+}
+
+// ===== Migrações seguras de colunas (instalações antigas) =====
+let colunasUsuariosVerificadas = false;
+async function garantirColunasUsuarios(conn: any) {
+  if (colunasUsuariosVerificadas) return;
+  const cols: [string, string][] = [
+    ['slug', 'VARCHAR(100) DEFAULT NULL'],
+    ['reset_token', 'VARCHAR(255) NULL'],
+    ['reset_expiry', 'DATETIME NULL'],
+  ];
+  for (const [nome, def] of cols) {
+    try {
+      const [r]: any = await conn.query('SHOW COLUMNS FROM usuarios LIKE ?', [nome]);
+      if (!r || r.length === 0) await conn.query(`ALTER TABLE usuarios ADD COLUMN ${nome} ${def}`);
+    } catch (e: any) {
+      console.error(`Aviso: não foi possível criar a coluna usuarios.${nome}:`, e.message);
+    }
+  }
+  colunasUsuariosVerificadas = true;
+}
+
+function slugifyNome(nome: string): string {
+  return String(nome || '').toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu, '')
+    .trim().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '').replace(/-{2,}/g, '-').replace(/^-|-$/g, '') || 'usuario';
+}
+
+async function gerarSlugUsuarioUnico(conn: any, base: string, idAtual?: string): Promise<string> {
+  const raiz = slugifyNome(base);
+  let slug = raiz;
+  let i = 2;
+  while (true) {
+    const [r]: any = await conn.query('SELECT id FROM usuarios WHERE slug = ? AND id <> ? LIMIT 1', [slug, idAtual || '']);
+    if (!r || r.length === 0) return slug;
+    slug = `${raiz}-${i++}`;
+  }
+}
+
+async function getConfigAgencia(conn: any): Promise<any> {
+  try {
+    const [rows]: any = await conn.query('SELECT dados_json FROM configuracao_fixa LIMIT 1');
+    if (rows && rows[0] && rows[0].dados_json) return JSON.parse(rows[0].dados_json);
+  } catch (e) {}
+  return {};
 }
 
 async function getDbConnection() {
@@ -189,6 +258,7 @@ app.post('/api/install/create-tables', async (req, res) => {
         cliente_nome VARCHAR(255) NOT NULL,
         cliente_empresa VARCHAR(255) DEFAULT '',
         titulo VARCHAR(255) NOT NULL,
+        slug VARCHAR(120) DEFAULT NULL,
         status VARCHAR(50) DEFAULT 'ativo',
         valor_total DECIMAL(10,2) DEFAULT 0.00,
         criado_por_id VARCHAR(50),
@@ -232,9 +302,9 @@ app.post('/api/install/create-tables', async (req, res) => {
 
     // Registra log da criação de tabelas
     await connection.query(
-      `INSERT INTO logs_auditoria (id, usuario_nome, acao, detalhes, data_hora) 
-       VALUES (?, 'Instalador Automático', 'CRIACAO', 'Tabelas do sistema estruturadas no MySQL com sucesso.', ?)`,
-      [`log_${Date.now()}`, new Date().toISOString()]
+      `INSERT INTO logs_auditoria (id, usuario_nome, acao, detalhes, data_hora, ip) 
+       VALUES (?, 'Instalador Automático', 'CRIACAO', 'Tabelas do sistema estruturadas no MySQL com sucesso.', ?, ?)`,
+      [`log_${Date.now()}`, new Date().toISOString(), getIp(req)]
     );
 
     await connection.end();
@@ -281,9 +351,9 @@ app.post('/api/install/create-admin', async (req, res) => {
 
     // Registra log de instalação
     await connection.query(
-      `INSERT INTO logs_auditoria (id, usuario_nome, acao, detalhes, data_hora) 
-       VALUES (?, ?, 'CRIACAO', 'Instalação do sistema finalizada. Super Administrador ativado.', ?)`,
-      [`log_${Date.now()}`, name || 'Super Admin', agora]
+      `INSERT INTO logs_auditoria (id, usuario_nome, acao, detalhes, data_hora, ip) 
+       VALUES (?, ?, 'CRIACAO', 'Instalação do sistema finalizada. Super Administrador ativado.', ?, ?)`,
+      [`log_${Date.now()}`, name || 'Super Admin', agora, getIp(req)]
     );
 
     await connection.end();
@@ -335,9 +405,9 @@ app.post('/api/login', async (req, res) => {
 
       // Log de falha de login
       await connection.query(
-        `INSERT INTO logs_auditoria (id, usuario_nome, acao, detalhes, status_seguranca, data_hora) 
-         VALUES (?, ?, 'VISUALIZACAO', 'Tentativa de login com e-mail inexistente.', 'ALERTA', ?)`,
-        [`log_${Date.now()}`, email, new Date().toISOString()]
+        `INSERT INTO logs_auditoria (id, usuario_nome, acao, detalhes, status_seguranca, data_hora, ip) 
+         VALUES (?, ?, 'VISUALIZACAO', 'Tentativa de login com e-mail inexistente.', 'ALERTA', ?, ?)`,
+        [`log_${Date.now()}`, email, new Date().toISOString(), getIp(req)]
       );
       await connection.end();
 
@@ -358,9 +428,9 @@ app.post('/api/login', async (req, res) => {
 
     if (!senhaValida) {
       await connection.query(
-        `INSERT INTO logs_auditoria (id, usuario_id, usuario_nome, acao, detalhes, status_seguranca, data_hora) 
-         VALUES (?, ?, ?, 'VISUALIZACAO', 'Tentativa de login com senha incorreta.', 'ALERTA', ?)`,
-        [`log_${Date.now()}`, user.id, user.nome, agora]
+        `INSERT INTO logs_auditoria (id, usuario_id, usuario_nome, acao, detalhes, status_seguranca, data_hora, ip) 
+         VALUES (?, ?, ?, 'VISUALIZACAO', 'Tentativa de login com senha incorreta.', 'ALERTA', ?, ?)`,
+        [`log_${Date.now()}`, user.id, user.nome, agora, getIp(req)]
       );
       await connection.end();
       return res.status(401).json({ error: 'Senha incorreta.' });
@@ -374,9 +444,9 @@ app.post('/api/login', async (req, res) => {
     // Atualiza data do último login e registra log
     await connection.query('UPDATE usuarios SET ultimo_login = ? WHERE id = ?', [agora, user.id]);
     await connection.query(
-      `INSERT INTO logs_auditoria (id, usuario_id, usuario_nome, acao, detalhes, data_hora) 
-       VALUES (?, ?, ?, 'ATIVACAO', 'Login bem-sucedido no painel de gestão.', ?)`,
-      [`log_${Date.now()}`, user.id, user.nome, agora]
+      `INSERT INTO logs_auditoria (id, usuario_id, usuario_nome, acao, detalhes, data_hora, ip) 
+       VALUES (?, ?, ?, 'ATIVACAO', 'Login bem-sucedido no painel de gestão.', ?, ?)`,
+      [`log_${Date.now()}`, user.id, user.nome, agora, getIp(req)]
     );
 
     await connection.end();
@@ -466,9 +536,9 @@ app.post('/api/config', async (req, res) => {
     );
 
     await conn.query(
-      `INSERT INTO logs_auditoria (id, usuario_nome, acao, detalhes, data_hora) 
-       VALUES (?, 'Admin', 'EDICAO', 'Configurações e identidade visual da agência atualizadas no banco.', ?)`,
-      [`log_${Date.now()}`, agora]
+      `INSERT INTO logs_auditoria (id, usuario_nome, acao, detalhes, data_hora, ip) 
+       VALUES (?, 'Admin', 'EDICAO', 'Configurações e identidade visual da agência atualizadas no banco.', ?, ?)`,
+      [`log_${Date.now()}`, agora, getIp(req)]
     );
 
     await conn.end();
@@ -505,6 +575,7 @@ app.post('/api/propostas', async (req, res) => {
     const conn = await getDbConnection();
     const agora = new Date().toISOString();
     const jsonStr = JSON.stringify(proposta);
+    await garantirColunaSlug(conn);
 
     await conn.query(
       `INSERT INTO propostas (id, token, cliente_nome, cliente_empresa, titulo, status, valor_total, criado_por_id, criado_por_nome, dados_json, criado_em, atualizado_em) 
@@ -533,10 +604,18 @@ app.post('/api/propostas', async (req, res) => {
       ]
     );
 
+    if (colunaSlugVerificada) {
+      try {
+        await conn.query('UPDATE propostas SET slug = ? WHERE id = ?', [proposta.slug || null, proposta.id]);
+      } catch (e: any) {
+        console.error('Aviso: falha ao gravar slug da proposta:', e.message);
+      }
+    }
+
     await conn.query(
-      `INSERT INTO logs_auditoria (id, proposta_id, proposta_titulo, usuario_nome, acao, detalhes, data_hora) 
-       VALUES (?, ?, ?, ?, 'EDICAO', 'Proposta comercial salva/atualizada no MySQL.', ?)`,
-      [`log_${Date.now()}`, proposta.id, proposta.titulo, proposta.criadoPor || 'Admin', agora]
+      `INSERT INTO logs_auditoria (id, proposta_id, proposta_titulo, usuario_nome, acao, detalhes, data_hora, ip) 
+       VALUES (?, ?, ?, ?, 'EDICAO', 'Proposta comercial salva/atualizada no MySQL.', ?, ?)`,
+      [`log_${Date.now()}`, proposta.id, proposta.titulo, proposta.criadoPor || 'Admin', agora, getIp(req)]
     );
 
     await conn.end();
@@ -552,9 +631,9 @@ app.delete('/api/propostas/:id', async (req, res) => {
     const conn = await getDbConnection();
     await conn.query('DELETE FROM propostas WHERE id = ?', [id]);
     await conn.query(
-      `INSERT INTO logs_auditoria (id, proposta_id, usuario_nome, acao, detalhes, status_seguranca, data_hora) 
-       VALUES (?, ?, 'Admin', 'EXCLUSAO', 'Proposta comercial excluída permanentemente.', 'ALERTA', ?)`,
-      [`log_${Date.now()}`, id, new Date().toISOString()]
+      `INSERT INTO logs_auditoria (id, proposta_id, usuario_nome, acao, detalhes, status_seguranca, data_hora, ip) 
+       VALUES (?, ?, 'Admin', 'EXCLUSAO', 'Proposta comercial excluída permanentemente.', 'ALERTA', ?, ?)`,
+      [`log_${Date.now()}`, id, new Date().toISOString(), getIp(req)]
     );
     await conn.end();
     return res.json({ success: true });
@@ -574,9 +653,9 @@ app.get('/api/proposta/token/:token', async (req, res) => {
       const prop = JSON.parse(rows[0].dados_json);
       // Registra visualização no log
       await conn.query(
-        `INSERT INTO logs_auditoria (id, proposta_id, proposta_titulo, usuario_nome, acao, detalhes, data_hora) 
-         VALUES (?, ?, ?, 'Cliente Público', 'VISUALIZACAO', 'Acesso ao link público da proposta.', ?)`,
-        [`log_${Date.now()}`, prop.id, prop.titulo, new Date().toISOString()]
+        `INSERT INTO logs_auditoria (id, proposta_id, proposta_titulo, usuario_nome, acao, detalhes, data_hora, ip) 
+         VALUES (?, ?, ?, 'Cliente Público', 'VISUALIZACAO', 'Acesso ao link público da proposta.', ?, ?)`,
+        [`log_${Date.now()}`, prop.id, prop.titulo, new Date().toISOString(), getIp(req)]
       );
       await conn.end();
       return res.json(prop);
@@ -584,6 +663,131 @@ app.get('/api/proposta/token/:token', async (req, res) => {
 
     await conn.end();
     return res.status(404).json({ error: 'Proposta não encontrada.' });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ===== Cartão digital público: /u/:slug =====
+app.get('/api/usuario/cartao/:slug', async (req, res) => {
+  try {
+    const slug = String(req.params.slug || '').toLowerCase().replace(/[^a-z0-9-_]/g, '');
+    const conn = await getDbConnection();
+    await garantirColunasUsuarios(conn);
+    const [rows]: any = await conn.query(
+      "SELECT id, nome, email, whatsapp, cargo, foto_url, slug FROM usuarios WHERE (slug = ? OR id = ?) AND status <> 'bloqueado' LIMIT 1",
+      [slug, slug]
+    );
+    await conn.end();
+    if (!rows || rows.length === 0) return res.status(404).json({ erro: 'Cartão não encontrado.' });
+    const u = rows[0];
+    return res.json({ id: u.id, nome: u.nome, email: u.email, whatsapp: u.whatsapp || '', cargo: u.cargo || '', fotoUrl: u.foto_url || '', slug: u.slug || u.id });
+  } catch (err: any) {
+    return res.status(500).json({ erro: err.message });
+  }
+});
+
+// ===== Recuperação de senha =====
+app.post('/api/auth/esqueci-senha', async (req, res) => {
+  try {
+    const email = String(req.body?.email || '').trim().toLowerCase();
+    if (!email) return res.status(400).json({ erro: 'Informe o e-mail.' });
+    const conn = await getDbConnection();
+    await garantirColunasUsuarios(conn);
+    const [rows]: any = await conn.query('SELECT id, nome FROM usuarios WHERE LOWER(email) = ? LIMIT 1', [email]);
+    if (!rows || rows.length === 0) {
+      await conn.end();
+      return res.status(404).json({ erro: 'Nenhum usuário encontrado com este e-mail.' });
+    }
+    const token = crypto.randomBytes(32).toString('hex');
+    await conn.query('UPDATE usuarios SET reset_token = ?, reset_expiry = DATE_ADD(NOW(), INTERVAL 1 HOUR) WHERE id = ?', [token, rows[0].id]);
+    const cfg = await getConfigAgencia(conn);
+    await conn.end();
+
+    const link = `${req.protocol}://${req.get('host')}/redefinir-senha?token=${token}`;
+    if (!cfg.smtpHost || !cfg.smtpUser || !cfg.smtpPass) {
+      return res.json({ sucesso: true, link, avisoSemSmtp: true });
+    }
+    try {
+      const porta = Number(cfg.smtpPort) || 465;
+      const transporter = nodemailer.createTransport({
+        host: cfg.smtpHost, port: porta, secure: porta === 465,
+        auth: { user: cfg.smtpUser, pass: cfg.smtpPass },
+      });
+      await transporter.sendMail({
+        from: cfg.smtpFrom || cfg.smtpUser,
+        to: email,
+        subject: `${cfg.nomeAgencia || 'Sistema de Propostas'} • Redefinição de senha`,
+        text: `Olá, ${rows[0].nome}!\n\nPara redefinir sua senha, acesse o link abaixo (válido por 1 hora):\n${link}\n\nSe você não solicitou, ignore este e-mail.`,
+        html: `<p>Olá, <strong>${String(rows[0].nome).replace(/</g, '&lt;')}</strong>!</p><p>Para redefinir sua senha, clique no link abaixo (válido por 1 hora):</p><p><a href="${link}">${link}</a></p><p>Se você não solicitou, ignore este e-mail.</p>`,
+      });
+      return res.json({ sucesso: true, emailEnviado: true });
+    } catch (e: any) {
+      console.error('Falha no envio SMTP:', e.message);
+      return res.json({ sucesso: true, link, avisoSemSmtp: true, erroSmtp: e.message });
+    }
+  } catch (err: any) {
+    return res.status(500).json({ erro: err.message });
+  }
+});
+
+app.post('/api/auth/redefinir-senha', async (req, res) => {
+  try {
+    const token = String(req.body?.token || '');
+    const novaSenha = String(req.body?.novaSenha || '');
+    if (!token || novaSenha.length < 6) return res.status(400).json({ erro: 'Token inválido ou senha com menos de 6 caracteres.' });
+    const conn = await getDbConnection();
+    await garantirColunasUsuarios(conn);
+    const [rows]: any = await conn.query('SELECT id FROM usuarios WHERE reset_token = ? AND reset_expiry > NOW() LIMIT 1', [token]);
+    if (!rows || rows.length === 0) {
+      await conn.end();
+      return res.status(400).json({ erro: 'Link inválido ou expirado. Solicite uma nova recuperação.' });
+    }
+    await conn.query('UPDATE usuarios SET senha = ?, reset_token = NULL, reset_expiry = NULL WHERE id = ?', [await bcrypt.hash(novaSenha, 10), rows[0].id]);
+    await conn.end();
+    return res.json({ sucesso: true });
+  } catch (err: any) {
+    return res.status(500).json({ erro: err.message });
+  }
+});
+
+// Consulta de proposta pela URL amigável (/proposta-<slug>) — link público de cliente
+app.get('/api/proposta/slug/:slug', async (req, res) => {
+  try {
+    const slug = String(req.params.slug || '').toLowerCase().replace(/[^a-z0-9-]/g, '');
+    if (!slug) return res.status(400).json({ error: 'URL inválida.' });
+
+    const conn = await getDbConnection();
+    await garantirColunaSlug(conn);
+
+    let prop: any = null;
+    if (colunaSlugVerificada) {
+      const [rows]: any = await conn.query('SELECT dados_json FROM propostas WHERE slug = ? LIMIT 1', [slug]);
+      if (rows && rows.length > 0) prop = JSON.parse(rows[0].dados_json);
+    }
+    if (!prop) {
+      // Fallback: procura o slug dentro do JSON (propostas salvas antes da coluna existir)
+      const [rows]: any = await conn.query('SELECT dados_json FROM propostas WHERE dados_json LIKE ?', [`%"slug":"${slug}"%`]);
+      for (const r of rows || []) {
+        try {
+          const p = JSON.parse(r.dados_json);
+          if (p && p.slug === slug) { prop = p; break; }
+        } catch (e) {}
+      }
+    }
+
+    if (!prop) {
+      await conn.end();
+      return res.status(404).json({ error: 'Proposta não encontrada.' });
+    }
+
+    await conn.query(
+      `INSERT INTO logs_auditoria (id, proposta_id, proposta_titulo, usuario_nome, acao, detalhes, data_hora, ip) 
+       VALUES (?, ?, ?, 'Cliente Público', 'VISUALIZACAO', 'Acesso ao link público da proposta (URL amigável).', ?, ?)`,
+      [`log_${Date.now()}`, prop.id, prop.titulo, new Date().toISOString(), getIp(req)]
+    );
+    await conn.end();
+    return res.json(prop);
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
   }
@@ -650,9 +854,9 @@ app.post('/api/modelos', async (req, res) => {
     );
 
     await conn.query(
-      `INSERT INTO logs_auditoria (id, usuario_nome, acao, detalhes, data_hora)
-       VALUES (?, 'Admin', 'CRIACAO', 'Modelo de proposta salvo no banco de dados.', ?)`,
-      [`log_${Date.now()}`, agora]
+      `INSERT INTO logs_auditoria (id, usuario_nome, acao, detalhes, data_hora, ip)
+       VALUES (?, 'Admin', 'CRIACAO', 'Modelo de proposta salvo no banco de dados.', ?, ?)`,
+      [`log_${Date.now()}`, agora, getIp(req)]
     );
 
     await conn.end();
@@ -668,9 +872,9 @@ app.delete('/api/modelos/:id', async (req, res) => {
     const conn = await getDbConnection();
     await conn.query('DELETE FROM modelos_propostas WHERE id = ?', [id]);
     await conn.query(
-      `INSERT INTO logs_auditoria (id, usuario_nome, acao, detalhes, status_seguranca, data_hora)
-       VALUES (?, 'Admin', 'EXCLUSAO', 'Modelo de proposta removido do MySQL.', 'ALERTA', ?)`,
-      [`log_${Date.now()}`, new Date().toISOString()]
+      `INSERT INTO logs_auditoria (id, usuario_nome, acao, detalhes, status_seguranca, data_hora, ip)
+       VALUES (?, 'Admin', 'EXCLUSAO', 'Modelo de proposta removido do MySQL.', 'ALERTA', ?, ?)`,
+      [`log_${Date.now()}`, new Date().toISOString(), getIp(req)]
     );
     await conn.end();
     return res.json({ success: true });
@@ -719,7 +923,7 @@ app.post('/api/logs', async (req, res) => {
         log.usuarioNome || 'Sistema',
         log.acao || 'INFO',
         log.detalhes || '',
-        log.ip || req.ip || '127.0.0.1',
+        getIp(req),
         log.userAgent || req.headers['user-agent'] || '',
         log.statusSeguranca || 'OK',
         log.dataHora || new Date().toISOString()
@@ -760,59 +964,77 @@ app.get('/api/usuarios', async (req, res) => {
 });
 
 app.post('/api/usuarios', async (req, res) => {
+  let conn: any;
   try {
-    const u = req.body;
-    const conn = await getDbConnection();
+    const u = req.body || {};
+    const nome = String(u.nome || '').trim();
+    const email = String(u.email || '').trim().toLowerCase();
+    const papel = u.perfil || u.papel || 'comercial';
+    if (!nome || !email) return res.status(400).json({ erro: 'Nome e e-mail são obrigatórios.' });
+
+    conn = await getDbConnection();
     const agora = new Date().toISOString();
 
-    let query = '';
-    let params: any[] = [];
-
-    if (u.senha) {
-      const hashed = await bcrypt.hash(u.senha, 10);
-      query = `
-        INSERT INTO usuarios (id, nome, email, senha, whatsapp, cargo, foto_url, slug, papel, status, pode_criar_secoes, criado_em) 
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON DUPLICATE KEY UPDATE 
-          nome = VALUES(nome),
-          senha = VALUES(senha),
-          whatsapp = VALUES(whatsapp),
-          cargo = VALUES(cargo),
-          foto_url = VALUES(foto_url),
-          slug = VALUES(slug),
-          papel = VALUES(papel),
-          status = VALUES(status),
-          pode_criar_secoes = VALUES(pode_criar_secoes)
-      `;
-      params = [u.id, u.nome, u.email, hashed, u.whatsapp || '', u.cargo || '', u.fotoUrl || '', u.slug || '', u.papel || 'comercial', u.status || 'ativo', u.podeCriarSecoes ? 1 : 0, agora];
-    } else {
-      query = `
-        INSERT INTO usuarios (id, nome, email, senha, whatsapp, cargo, foto_url, slug, papel, status, pode_criar_secoes, criado_em) 
-        VALUES (?, ?, ?, 'temp', ?, ?, ?, ?, ?, ?, ?, ?)
-        ON DUPLICATE KEY UPDATE 
-          nome = VALUES(nome),
-          whatsapp = VALUES(whatsapp),
-          cargo = VALUES(cargo),
-          foto_url = VALUES(foto_url),
-          slug = VALUES(slug),
-          papel = VALUES(papel),
-          status = VALUES(status),
-          pode_criar_secoes = VALUES(pode_criar_secoes)
-      `;
-      params = [u.id, u.nome, u.email, u.whatsapp || '', u.cargo || '', u.fotoUrl || '', u.slug || '', u.papel || 'comercial', u.status || 'ativo', u.podeCriarSecoes ? 1 : 0, agora];
+    // Verifica se o e-mail já pertence a OUTRO usuário
+    const [existentes]: any = await conn.query('SELECT id FROM usuarios WHERE LOWER(email) = ? LIMIT 1', [email]);
+    const existente = existentes && existentes[0];
+    const [porId]: any = u.id ? await conn.query('SELECT id FROM usuarios WHERE id = ? LIMIT 1', [u.id]) : [[]];
+    const isEdicao = !!(porId && porId[0]);
+    if (existente && existente.id !== u.id) {
+      await conn.end();
+      return res.status(409).json({ erro: 'Já existe um usuário cadastrado com este e-mail.' });
     }
 
-    await conn.query(query, params);
+    const id = u.id || `usr_${Date.now()}`;
+    await garantirColunasUsuarios(conn);
+    const slugUsuario = await gerarSlugUsuarioUnico(conn, u.slug || nome, id);
+    const campos = [nome, email, u.whatsapp || '', u.cargo || '', u.fotoUrl || '', slugUsuario, papel, u.status || 'ativo', u.podeCriarSecoes ? 1 : 0];
+
+    if (isEdicao) {
+      await conn.query(
+        `UPDATE usuarios SET nome = ?, email = ?, whatsapp = ?, cargo = ?, foto_url = ?, slug = ?, papel = ?, status = ?, pode_criar_secoes = ? WHERE id = ?`,
+        [...campos, id]
+      );
+      if (u.senha) {
+        await conn.query('UPDATE usuarios SET senha = ? WHERE id = ?', [await bcrypt.hash(String(u.senha), 10), id]);
+      }
+    } else {
+      if (!u.senha) {
+        await conn.end();
+        return res.status(400).json({ erro: 'A senha é obrigatória para novos usuários.' });
+      }
+      const hash = await bcrypt.hash(String(u.senha), 10);
+      await conn.query(
+        `INSERT INTO usuarios (id, nome, email, whatsapp, cargo, foto_url, slug, papel, status, pode_criar_secoes, senha, criado_em)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [id, ...campos, hash, agora]
+      );
+    }
+
     await conn.query(
-      `INSERT INTO logs_auditoria (id, usuario_nome, acao, detalhes, data_hora) 
-       VALUES (?, 'Admin', 'EDICAO', 'Usuário salvo ou atualizado na equipe.', ?)`,
-      [`log_${Date.now()}`, agora]
+      `INSERT INTO logs_auditoria (id, usuario_nome, acao, detalhes, data_hora, ip)
+       VALUES (?, 'Admin', ?, ?, ?, ?)`,
+      [`log_${Date.now()}`, isEdicao ? 'EDICAO' : 'CRIACAO', `Usuário "${nome}" ${isEdicao ? 'atualizado' : 'criado'} na equipe.`, agora, getIp(req)]
     );
 
+    const [rows]: any = await conn.query(
+      'SELECT id, nome, email, whatsapp, cargo, foto_url, slug, papel, status, ultimo_login, pode_criar_secoes FROM usuarios WHERE id = ?',
+      [id]
+    );
     await conn.end();
-    return res.json({ success: true });
+    const r = rows[0];
+    return res.status(isEdicao ? 200 : 201).json({
+      success: true,
+      usuario: {
+        id: r.id, nome: r.nome, email: r.email, whatsapp: r.whatsapp || '', cargo: r.cargo || '',
+        fotoUrl: r.foto_url || '', slug: r.slug || '', papel: r.papel, perfil: r.papel, status: r.status,
+        ultimoLogin: r.ultimo_login, podeCriarSecoes: r.pode_criar_secoes === 1,
+      },
+    });
   } catch (err: any) {
-    return res.status(500).json({ error: err.message });
+    try { if (conn) await conn.end(); } catch (e) {}
+    console.error('Erro em POST /api/usuarios:', err);
+    return res.status(500).json({ erro: 'Erro ao salvar usuário: ' + err.message });
   }
 });
 
@@ -822,9 +1044,9 @@ app.delete('/api/usuarios/:id', async (req, res) => {
     const conn = await getDbConnection();
     await conn.query('DELETE FROM usuarios WHERE id = ?', [id]);
     await conn.query(
-      `INSERT INTO logs_auditoria (id, usuario_nome, acao, detalhes, status_seguranca, data_hora) 
-       VALUES (?, 'Admin', 'EXCLUSAO', 'Usuário removido da equipe comercial.', 'ALERTA', ?)`,
-      [`log_${Date.now()}`, new Date().toISOString()]
+      `INSERT INTO logs_auditoria (id, usuario_nome, acao, detalhes, status_seguranca, data_hora, ip) 
+       VALUES (?, 'Admin', 'EXCLUSAO', 'Usuário removido da equipe comercial.', 'ALERTA', ?, ?)`,
+      [`log_${Date.now()}`, new Date().toISOString(), getIp(req)]
     );
     await conn.end();
     return res.json({ success: true });
@@ -837,8 +1059,43 @@ app.delete('/api/usuarios/:id', async (req, res) => {
 // 5. MIDDLEWARE DE INSTALAÇÃO & ARQUIVOS ESTÁTICOS
 // ==========================================
 
+// ==========================================
+// UPLOAD DE IMAGENS (logo, fotos)
+// ==========================================
+const uploadDir = path.join(process.cwd(), 'public', 'uploads');
+if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
+const storage = multer.diskStorage({
+  destination: uploadDir,
+  filename: (req, file, cb) => cb(null, Date.now() + '-' + file.originalname.replace(/[^a-zA-Z0-9.-]/g, '_')),
+});
+const upload = multer({
+  storage,
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => cb(null, /^image\/(png|jpe?g|webp|gif|svg\+xml)$/i.test(file.mimetype)),
+});
+
+// Só permite upload depois que o sistema estiver instalado
+function authMiddleware(req: express.Request, res: express.Response, next: express.NextFunction) {
+  if (!fs.existsSync(LOCK_FILE)) return res.status(403).json({ erro: 'Sistema não instalado.' });
+  next();
+}
+
+app.post('/api/upload', authMiddleware, upload.single('arquivo'), (req, res) => {
+  if (!req.file) return res.status(400).json({ erro: 'Nenhum arquivo enviado (apenas imagens até 5 MB).' });
+  res.json({ url: '/uploads/' + req.file.filename });
+});
+
+// Arquivos internos do servidor nunca devem ser servidos publicamente
+const ARQUIVOS_PROTEGIDOS = /(^|\/)(db-config\.json|installed\.lock|server\.js|\.env.*)$/i;
+app.use((req, res, next) => {
+  if (ARQUIVOS_PROTEGIDOS.test(req.path)) return res.status(404).end();
+  next();
+});
+
 app.use((req, res, next) => {
   if (req.path.startsWith('/api')) return next();
+  // Arquivos estáticos (JS, CSS, imagens) devem carregar mesmo antes da instalação
+  if (req.path.startsWith('/assets/') || path.extname(req.path)) return next();
 
   const isInstalled = fs.existsSync(LOCK_FILE);
   if (!isInstalled && req.path !== '/install') {
@@ -847,8 +1104,18 @@ app.use((req, res, next) => {
   next();
 });
 
-// Servir frontend compilado
-app.use(express.static(path.join(__dirname)));
+// Arquivos públicos enviados (uploads) — servidos ANTES do frontend compilado
+app.use(express.static(path.join(process.cwd(), 'public'), { index: false }));
+
+// Servir frontend compilado (index: false para que "/" passe pelo catch-all abaixo)
+app.use(express.static(path.join(__dirname), { index: false }));
+
+// Rotas desconhecidas em /api retornam JSON (evita "Unexpected token '<'" no navegador)
+app.all('/api/*', (req, res) => {
+  res.status(404).json({ error: `Rota da API não encontrada: ${req.method} ${req.path}` });
+});
+
+// SPA: qualquer outra rota (ex.: /proposta-nome-do-cliente) devolve o index.html
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'index.html'));
 });

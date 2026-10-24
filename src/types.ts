@@ -191,6 +191,7 @@ export interface ClienteLogoItem {
 export interface Proposta {
   id: string;
   token: string; // Hash seguro para URL pública
+  slug?: string; // URL amigável: /proposta-<slug>
   titulo: string;
   clienteNome: string;
   clienteEmpresa: string;
@@ -240,6 +241,12 @@ export interface Proposta {
 
 export interface ConfiguracaoFixa {
   id: string;
+  // SMTP opcional (recuperação de senha)
+  smtpHost?: string;
+  smtpPort?: string;
+  smtpUser?: string;
+  smtpPass?: string;
+  smtpFrom?: string;
   nomeAgencia: string;
   slogan: string;
   cnpj: string;
