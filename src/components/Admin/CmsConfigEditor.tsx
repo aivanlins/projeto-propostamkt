@@ -183,6 +183,35 @@ export const CmsConfigEditor: React.FC<CmsConfigEditorProps> = ({
     setDraggedIndex(null);
   };
 
+  // Nova Seção simples: título via prompt, sem linhas/colunas/widgets, salva imediatamente
+  const handleNovaSecaoSimples = () => {
+    const titulo = window.prompt('Título da nova seção:');
+    if (!titulo || !titulo.trim()) return;
+    const novaSecao: SecaoConfiguravel = {
+      id: Date.now().toString(),
+      titulo: titulo.trim(),
+      descricao: '',
+      ativo: true,
+      tipo: 'customizada',
+      podeEditar: true,
+      linhas: [],
+      widgetsExtras: [],
+    };
+    const atualizadas = [...secoesAtivas, novaSecao];
+    setSecoesAtivas(atualizadas);
+    if (alvoAplicacao === 'global') {
+      const novaConfig = { ...formData, secoesOrdem: atualizadas };
+      setFormData(novaConfig);
+      onSalvarConfig(novaConfig);
+    } else {
+      const prop = propostas.find(p => p.id === alvoAplicacao);
+      if (prop && onAtualizarPropostaEspecifica) {
+        onAtualizarPropostaEspecifica({ ...prop, secoesPersonalizadas: atualizadas });
+      }
+    }
+    setSecaoEmEdicao(novaSecao);
+  };
+
   // Criar Nova Seção Customizada
   const handleCriarNovaSecaoCustomizada = () => {
     const novaId = `sec_custom_${Date.now()}`;
@@ -1073,6 +1102,13 @@ export const CmsConfigEditor: React.FC<CmsConfigEditorProps> = ({
                 </div>
 
                 <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleNovaSecaoSimples}
+                    className="inline-flex items-center gap-1.5 px-4 py-2 rounded-2xl border border-purple-300 dark:border-purple-800 text-purple-700 dark:text-purple-300 hover:bg-purple-50 dark:hover:bg-purple-950/40 font-bold text-xs transition-all cursor-pointer"
+                  >
+                    ＋ Nova Seção
+                  </button>
                   <button
                     type="button"
                     onClick={handleCriarNovaSecaoCustomizada}

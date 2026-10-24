@@ -1440,10 +1440,9 @@ export const ClientProposalView: React.FC<ClientProposalViewProps> = ({
     if (!nativo) return null;
 
     if (secaoItem.linhas && secaoItem.linhas.length > 0) {
-      return (
-        <div key={secaoItem.id} className="space-y-4 mb-8">
-          {nativo}
-          <div className="bg-white dark:bg-zinc-900 rounded-3xl p-6 sm:p-8 border border-zinc-200 dark:border-zinc-800 shadow-sm space-y-6">
+      // Colunas/widgets extras são renderizados DENTRO da seção pai (antes saíam num bloco separado)
+      const extras = (
+          <div key={`${secaoItem.id}_extras`} className="relative z-10 mt-6 pt-6 border-t border-black/5 dark:border-white/10">
             <div className="space-y-6">
               {secaoItem.linhas.map((linha, lIdx) => (
                 <div 
@@ -1478,8 +1477,12 @@ export const ClientProposalView: React.FC<ClientProposalViewProps> = ({
               ))}
             </div>
           </div>
-        </div>
       );
+      if (React.isValidElement(nativo)) {
+        const el = nativo as React.ReactElement<{ children?: React.ReactNode }>;
+        return React.cloneElement(el, undefined, el.props.children, extras);
+      }
+      return <div key={secaoItem.id}>{nativo}{extras}</div>;
     }
 
     return nativo;

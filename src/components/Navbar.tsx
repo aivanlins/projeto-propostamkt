@@ -1,5 +1,5 @@
 import React from 'react';
-import { 
+import { Users, 
   Building2, LayoutDashboard, Palette, ShieldCheck, Moon, Sun
 } from 'lucide-react';
 import { Proposta, ConfiguracaoFixa, Usuario } from '../types';
@@ -14,6 +14,7 @@ export type ModoVisualizacao =
   | 'agencia'
   | 'instalador' 
   | 'seguranca' 
+  | 'equipe' 
   | 'cpanel';
 
 interface NavbarProps {
@@ -85,6 +86,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               { id: 'admin', label: 'Dashboard & KPIs', icon: LayoutDashboard },
               { id: 'cms', label: 'CMS & Seções', icon: Palette },
               { id: 'agencia', label: 'Identidade & Agência', icon: Building2 },
+              { id: 'equipe', label: 'Equipe Comercial', icon: Users },
               { id: 'seguranca', label: 'Auditoria SIEM', icon: ShieldCheck },
             ].map(item => {
               const Icon = item.icon;
@@ -132,6 +134,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             { id: 'admin', label: 'Dashboard' },
             { id: 'cms', label: 'CMS' },
             { id: 'agencia', label: 'Agência & Cores' },
+            { id: 'equipe', label: 'Equipe' },
             { id: 'seguranca', label: 'Auditoria' },
           ].map(item => (
             <button

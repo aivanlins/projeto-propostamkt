@@ -30,7 +30,7 @@ import { CmsConfigEditor } from './components/Admin/CmsConfigEditor';
 import { SystemInstallerPage } from './components/Installer/SystemInstallerPage';
 import { SecurityLogs } from './components/Admin/SecurityLogs';
 import { CpanelDeploymentKit } from './components/DeploymentKit/CpanelDeploymentKit';
-import { UserManagementModal } from './components/Admin/UserManagementModal';
+import { TeamManagementPage } from './components/Admin/TeamManagementPage';
 import { AgencySettingsPage } from './components/Admin/AgencySettingsPage';
 import { LoginPage } from './components/Auth/LoginPage';
 import { RedefinirSenhaPage } from './components/Auth/RedefinirSenhaPage';
@@ -39,7 +39,6 @@ import { detectarRotaPublica, gerarSlugUnico } from './utils/propostaUrl';
 
 export default function App() {
   const [cartaoPerfilAberto, setCartaoPerfilAberto] = useState<Usuario | null>(null);
-  const [userModalAberto, setUserModalAberto] = useState(false);
 
   // Usuários do sistema
   const [usuarios, setUsuarios] = useState<Usuario[]>(() => {
@@ -560,6 +559,13 @@ export default function App() {
       });
   };
 
+  const handleExcluirUsuario = (id: string) => {
+    const removido = usuarios.find(u => u.id === id);
+    setUsuarios(prev => prev.filter(u => u.id !== id));
+    if (removido) registrarLog('EXCLUSAO', `Usuário "${removido.nome}" excluído da equipe.`, undefined, 'ALERTA');
+    fetch(`/api/usuarios/${id}`, { method: 'DELETE' }).catch(err => console.error('Erro ao excluir usuário no MySQL:', err));
+  };
+
   const handleAlternarStatusUsuario = (id: string, novoStatus: 'ativo' | 'bloqueado') => {
     let userAlterado: Usuario | null = null;
     const novos = usuarios.map(u => {
@@ -731,7 +737,7 @@ export default function App() {
                   onExcluirProposta={handleExcluirProposta}
                   onGarantirSlug={handleGarantirSlug}
                   onRegistrarEnvioEmail={handleRegistrarEnvioEmail}
-                  onAbrirGerenciadorUsuarios={() => setUserModalAberto(true)}
+                  onAbrirGerenciadorUsuarios={() => setModoAtual('equipe')}
                 />
               </div>
             )}
@@ -782,6 +788,17 @@ export default function App() {
             )}
 
             {/* AUDITORIA SIEM */}
+            {/* EQUIPE COMERCIAL (página dedicada) */}
+            {isLogado && modoAtual === 'equipe' && (
+              <TeamManagementPage
+                usuarios={usuarios}
+                usuarioAtual={usuarioAtual}
+                onSalvarUsuario={handleSalvarUsuario}
+                onAlternarStatusUsuario={handleAlternarStatusUsuario}
+                onExcluirUsuario={handleExcluirUsuario}
+              />
+            )}
+
             {isLogado && modoAtual === 'seguranca' && (
               <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
                 <SecurityLogs
@@ -813,16 +830,6 @@ export default function App() {
         </>
       )}
 
-      {/* MODAL DE USUÁRIOS */}
-      {userModalAberto && (
-        <UserManagementModal
-          usuarios={usuarios}
-          usuarioAtual={usuarioAtual}
-          onSalvarUsuario={handleSalvarUsuario}
-          onAlternarStatusUsuario={handleAlternarStatusUsuario}
-          onFechar={() => setUserModalAberto(false)}
-        />
-      )}
 
       {/* MODAL CARTÃO DE CONTATO */}
       {cartaoPerfilAberto && (
