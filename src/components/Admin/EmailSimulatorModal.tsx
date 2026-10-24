@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import { Proposta, ConfiguracaoFixa } from '../../types';
 import { formatarDataHora } from '../../utils/security';
+import { getUrlProposta } from '../../utils/propostaUrl';
 
 interface EmailSimulatorModalProps {
   proposta: Proposta;
@@ -31,7 +32,7 @@ export const EmailSimulatorModal: React.FC<EmailSimulatorModalProps> = ({
   const [statusEnvio, setStatusEnvio] = useState<'ocioso' | 'enviando' | 'sucesso'>('ocioso');
   const [etapaTexto, setEtapaTexto] = useState('');
 
-  const linkProposta = `${window.location.origin}${window.location.pathname}?token=${proposta.token}`;
+  const linkProposta = getUrlProposta(proposta);
 
   const handleDispararEnvio = () => {
     setStatusEnvio('enviando');

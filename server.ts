@@ -41,6 +41,22 @@ function getDbConfig() {
   return null;
 }
 
+// Migração segura: adiciona a coluna "slug" (URL amigável) em instalações antigas.
+// Executa no máximo uma vez com sucesso por processo; falhas não interrompem o sistema.
+let colunaSlugVerificada = false;
+async function garantirColunaSlug(conn: any) {
+  if (colunaSlugVerificada) return;
+  try {
+    const [cols]: any = await conn.query("SHOW COLUMNS FROM propostas LIKE 'slug'");
+    if (!cols || cols.length === 0) {
+      await conn.query('ALTER TABLE propostas ADD COLUMN slug VARCHAR(120) DEFAULT NULL');
+    }
+    colunaSlugVerificada = true;
+  } catch (e: any) {
+    console.error('Aviso: não foi possível verificar/criar a coluna slug em propostas:', e.message);
+  }
+}
+
 async function getDbConnection() {
   const config = getDbConfig();
   if (!config) throw new Error('Banco de dados não configurado. Conclua a instalação.');
@@ -189,6 +205,7 @@ app.post('/api/install/create-tables', async (req, res) => {
         cliente_nome VARCHAR(255) NOT NULL,
         cliente_empresa VARCHAR(255) DEFAULT '',
         titulo VARCHAR(255) NOT NULL,
+        slug VARCHAR(120) DEFAULT NULL,
         status VARCHAR(50) DEFAULT 'ativo',
         valor_total DECIMAL(10,2) DEFAULT 0.00,
         criado_por_id VARCHAR(50),
@@ -505,6 +522,7 @@ app.post('/api/propostas', async (req, res) => {
     const conn = await getDbConnection();
     const agora = new Date().toISOString();
     const jsonStr = JSON.stringify(proposta);
+    await garantirColunaSlug(conn);
 
     await conn.query(
       `INSERT INTO propostas (id, token, cliente_nome, cliente_empresa, titulo, status, valor_total, criado_por_id, criado_por_nome, dados_json, criado_em, atualizado_em) 
@@ -532,6 +550,14 @@ app.post('/api/propostas', async (req, res) => {
         agora
       ]
     );
+
+    if (colunaSlugVerificada) {
+      try {
+        await conn.query('UPDATE propostas SET slug = ? WHERE id = ?', [proposta.slug || null, proposta.id]);
+      } catch (e: any) {
+        console.error('Aviso: falha ao gravar slug da proposta:', e.message);
+      }
+    }
 
     await conn.query(
       `INSERT INTO logs_auditoria (id, proposta_id, proposta_titulo, usuario_nome, acao, detalhes, data_hora) 
@@ -584,6 +610,48 @@ app.get('/api/proposta/token/:token', async (req, res) => {
 
     await conn.end();
     return res.status(404).json({ error: 'Proposta não encontrada.' });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Consulta de proposta pela URL amigável (/proposta-<slug>) — link público de cliente
+app.get('/api/proposta/slug/:slug', async (req, res) => {
+  try {
+    const slug = String(req.params.slug || '').toLowerCase().replace(/[^a-z0-9-]/g, '');
+    if (!slug) return res.status(400).json({ error: 'URL inválida.' });
+
+    const conn = await getDbConnection();
+    await garantirColunaSlug(conn);
+
+    let prop: any = null;
+    if (colunaSlugVerificada) {
+      const [rows]: any = await conn.query('SELECT dados_json FROM propostas WHERE slug = ? LIMIT 1', [slug]);
+      if (rows && rows.length > 0) prop = JSON.parse(rows[0].dados_json);
+    }
+    if (!prop) {
+      // Fallback: procura o slug dentro do JSON (propostas salvas antes da coluna existir)
+      const [rows]: any = await conn.query('SELECT dados_json FROM propostas WHERE dados_json LIKE ?', [`%"slug":"${slug}"%`]);
+      for (const r of rows || []) {
+        try {
+          const p = JSON.parse(r.dados_json);
+          if (p && p.slug === slug) { prop = p; break; }
+        } catch (e) {}
+      }
+    }
+
+    if (!prop) {
+      await conn.end();
+      return res.status(404).json({ error: 'Proposta não encontrada.' });
+    }
+
+    await conn.query(
+      `INSERT INTO logs_auditoria (id, proposta_id, proposta_titulo, usuario_nome, acao, detalhes, data_hora) 
+       VALUES (?, ?, ?, 'Cliente Público', 'VISUALIZACAO', 'Acesso ao link público da proposta (URL amigável).', ?)`,
+      [`log_${Date.now()}`, prop.id, prop.titulo, new Date().toISOString()]
+    );
+    await conn.end();
+    return res.json(prop);
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
   }
@@ -837,8 +905,17 @@ app.delete('/api/usuarios/:id', async (req, res) => {
 // 5. MIDDLEWARE DE INSTALAÇÃO & ARQUIVOS ESTÁTICOS
 // ==========================================
 
+// Arquivos internos do servidor nunca devem ser servidos publicamente
+const ARQUIVOS_PROTEGIDOS = /(^|\/)(db-config\.json|installed\.lock|server\.js|\.env.*)$/i;
+app.use((req, res, next) => {
+  if (ARQUIVOS_PROTEGIDOS.test(req.path)) return res.status(404).end();
+  next();
+});
+
 app.use((req, res, next) => {
   if (req.path.startsWith('/api')) return next();
+  // Arquivos estáticos (JS, CSS, imagens) devem carregar mesmo antes da instalação
+  if (req.path.startsWith('/assets/') || path.extname(req.path)) return next();
 
   const isInstalled = fs.existsSync(LOCK_FILE);
   if (!isInstalled && req.path !== '/install') {
@@ -847,8 +924,15 @@ app.use((req, res, next) => {
   next();
 });
 
-// Servir frontend compilado
-app.use(express.static(path.join(__dirname)));
+// Servir frontend compilado (index: false para que "/" passe pelo catch-all abaixo)
+app.use(express.static(path.join(__dirname), { index: false }));
+
+// Rotas desconhecidas em /api retornam JSON (evita "Unexpected token '<'" no navegador)
+app.all('/api/*', (req, res) => {
+  res.status(404).json({ error: `Rota da API não encontrada: ${req.method} ${req.path}` });
+});
+
+// SPA: qualquer outra rota (ex.: /proposta-nome-do-cliente) devolve o index.html
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'index.html'));
 });

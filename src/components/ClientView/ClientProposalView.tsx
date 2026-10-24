@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { 
   Calendar, Clock, CheckCircle2, ShieldCheck, 
-  MessageSquare, Sparkles, Building2, User, Mail, Phone,
+  MessageSquare, Sparkles, User, Mail, Phone,
   CreditCard, Award, ChevronRight, Lock, Check, Instagram, 
   Video, Camera, FileCheck, CheckSquare, XCircle, ArrowRight,
   ExternalLink, Layers, AlignLeft, List, MousePointerClick,
@@ -24,6 +24,8 @@ interface ClientProposalViewProps {
   onVoltarParaPainel?: () => void;
   onSimularAtivacao?: () => void;
   onAceitarProposta?: (nomeResponsavel: string, documento: string) => void;
+  /** Conteúdo fixo no canto superior direito (ex.: botão de tema claro/escuro). */
+  acaoTopoDireita?: React.ReactNode;
 }
 
 export const ClientProposalView: React.FC<ClientProposalViewProps> = ({
@@ -32,6 +34,7 @@ export const ClientProposalView: React.FC<ClientProposalViewProps> = ({
   onVoltarParaPainel,
   onSimularAtivacao,
   onAceitarProposta,
+  acaoTopoDireita,
 }) => {
   const statusUrl = verificarStatusExpiraUrl(proposta);
 
@@ -1523,6 +1526,9 @@ export const ClientProposalView: React.FC<ClientProposalViewProps> = ({
                 Aprovada
               </span>
             )}
+            {acaoTopoDireita && (
+              <div className="xl:fixed xl:top-2 xl:right-4 xl:z-50">{acaoTopoDireita}</div>
+            )}
           </div>
         </div>
       </header>
@@ -1651,19 +1657,6 @@ export const ClientProposalView: React.FC<ClientProposalViewProps> = ({
           </div>
         </footer>
       </main>
-
-      {/* DISCRETO BOTÃO FLUTUANTE PARA RETORNAR AO PAINEL (CASO SEJA O ADMIN/CONSULTOR) */}
-      {onVoltarParaPainel && (
-        <button
-          type="button"
-          onClick={onVoltarParaPainel}
-          className="fixed bottom-4 right-4 z-40 bg-zinc-900/90 dark:bg-white/90 text-white dark:text-zinc-900 px-4 py-2 rounded-full text-xs font-bold shadow-xl hover:scale-105 transition-transform backdrop-blur-sm flex items-center gap-1.5 opacity-70 hover:opacity-100"
-          title="Acesso rápido ao Painel Administrativo"
-        >
-          <Building2 className="w-3.5 h-3.5" />
-          <span>Painel Comercial</span>
-        </button>
-      )}
 
       {/* MODAL DE ACEITE DIGITAL */}
       {modalAceiteAberto && (

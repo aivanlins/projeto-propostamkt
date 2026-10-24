@@ -26,6 +26,8 @@ import {
   formatarDataHora 
 } from '../../utils/security';
 import { EmailSimulatorModal } from './EmailSimulatorModal';
+import { ShareProposalModal } from './ShareProposalModal';
+import { getUrlProposta } from '../../utils/propostaUrl';
 
 interface AdminDashboardProps {
   propostas: Proposta[];
@@ -36,7 +38,8 @@ interface AdminDashboardProps {
   onNavegarEditar: (proposta: Proposta) => void;
   onAlternarStatus: (id: string, novoStatus: StatusProposta) => void;
   onExcluirProposta: (id: string) => void;
-  onVisualizarComoCliente: (proposta: Proposta) => void;
+  /** Garante que a proposta tenha slug (URL amigável) e retorna a versão atualizada. */
+  onGarantirSlug: (proposta: Proposta) => Proposta;
   onRegistrarEnvioEmail: (proposta: Proposta, email: string, assunto: string) => void;
   onAbrirGerenciadorUsuarios: () => void;
 }
@@ -50,7 +53,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   onNavegarEditar,
   onAlternarStatus,
   onExcluirProposta,
-  onVisualizarComoCliente,
+  onGarantirSlug,
   onRegistrarEnvioEmail,
   onAbrirGerenciadorUsuarios,
 }) => {
@@ -60,6 +63,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
   // Modal do Simulador de Envio de E-mail
   const [propostaEmailAlvo, setPropostaEmailAlvo] = useState<Proposta | null>(null);
+
+  // Modal de compartilhamento (WhatsApp, E-mail, Copiar URL, Abrir página)
+  const [propostaCompartilharAlvo, setPropostaCompartilharAlvo] = useState<Proposta | null>(null);
+  const abrirCompartilhar = (prop: Proposta) => setPropostaCompartilharAlvo(onGarantirSlug(prop));
 
   const isAdmin = usuarioAtual.papel === 'admin';
 
@@ -116,9 +123,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     return matchBusca && p.status === filtroStatus;
   });
 
-  const handleCopiarLink = (token: string, id: string) => {
-    const url = `${window.location.origin}${window.location.pathname}?token=${token}`;
-    navigator.clipboard.writeText(url);
+  const handleCopiarLink = (prop: Proposta) => {
+    const id = prop.id;
+    const url = getUrlProposta(onGarantirSlug(prop));
+    navigator.clipboard.writeText(url).catch(() => {});
     setCopiadoId(id);
     setTimeout(() => setCopiadoId(null), 2500);
   };
@@ -416,11 +424,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 <div className="flex items-center gap-2 shrink-0">
                   <span className="font-mono font-bold text-zinc-800 dark:text-zinc-200">{formatarMoeda(prop.precoPor || prop.valorTotal)}</span>
                   <button
-                    onClick={() => onVisualizarComoCliente(prop)}
-                    className="p-1 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 transition-colors"
-                    title="Ver Proposta"
+                    onClick={() => abrirCompartilhar(prop)}
+                    className="p-1 text-zinc-400 hover:text-purple-600 dark:hover:text-purple-300 transition-colors"
+                    title="Compartilhar Proposta"
                   >
-                    <ExternalLink className="w-3.5 h-3.5" />
+                    <Share2 className="w-3.5 h-3.5" />
                   </button>
                 </div>
               </div>
@@ -526,9 +534,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                             {prop.token.substring(0, 10)}...
                           </code>
                           <button
-                            onClick={() => handleCopiarLink(prop.token, prop.id)}
+                            onClick={() => handleCopiarLink(prop)}
                             className="p-1 rounded hover:bg-zinc-200 dark:hover:bg-zinc-700 text-zinc-500 transition-colors"
-                            title="Copiar URL Segura com Token"
+                            title="Copiar URL da Proposta"
                           >
                             {copiadoId === prop.id ? (
                               <Check className="w-3.5 h-3.5 text-emerald-600" />
@@ -603,20 +611,20 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                         <div className="flex items-center justify-end gap-1.5">
                           {/* Notificar por E-mail */}
                           <button
-                            onClick={() => setPropostaEmailAlvo(prop)}
+                            onClick={() => setPropostaEmailAlvo(onGarantirSlug(prop))}
                             className="p-1.5 rounded-lg border border-purple-200 dark:border-purple-800 bg-purple-50 dark:bg-purple-950/40 text-purple-700 dark:text-purple-300 hover:bg-purple-100 transition-colors"
                             title="Disparar Notificação por E-mail com Template Oficial"
                           >
                             <Mail className="w-3.5 h-3.5" />
                           </button>
 
-                          {/* Ver como Cliente */}
+                          {/* Compartilhar (WhatsApp, E-mail, Copiar URL, Abrir página) */}
                           <button
-                            onClick={() => onVisualizarComoCliente(prop)}
-                            className="p-1.5 rounded-lg border border-zinc-200 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800 text-zinc-700 dark:text-zinc-300 transition-colors"
-                            title="Visualizar Página do Cliente"
+                            onClick={() => abrirCompartilhar(prop)}
+                            className="p-1.5 rounded-lg border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 transition-colors"
+                            title="Compartilhar Proposta"
                           >
-                            <ExternalLink className="w-3.5 h-3.5" />
+                            <Share2 className="w-3.5 h-3.5" />
                           </button>
 
                           {/* Editar em Página Dedicada */}
@@ -652,6 +660,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           </table>
         </div>
       </div>
+
+      {/* MODAL DE COMPARTILHAMENTO */}
+      {propostaCompartilharAlvo && (
+        <ShareProposalModal
+          proposta={propostaCompartilharAlvo}
+          config={config}
+          onFechar={() => setPropostaCompartilharAlvo(null)}
+        />
+      )}
 
       {/* MODAL DO SIMULADOR DE ENVIO DE E-MAIL */}
       {propostaEmailAlvo && (

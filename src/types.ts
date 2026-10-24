@@ -191,6 +191,7 @@ export interface ClienteLogoItem {
 export interface Proposta {
   id: string;
   token: string; // Hash seguro para URL pública
+  slug?: string; // URL amigável: /proposta-<slug>
   titulo: string;
   clienteNome: string;
   clienteEmpresa: string;

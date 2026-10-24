@@ -21,7 +21,7 @@ import {
   NotificacaoEmail,
   Usuario 
 } from './types';
-import { Phone, Mail, X, Download } from 'lucide-react';
+import { Phone, Mail, X, Download, Sun, Moon, Loader2, FileX } from 'lucide-react';
 import { Navbar, ModoVisualizacao } from './components/Navbar';
 import { ClientProposalView } from './components/ClientView/ClientProposalView';
 import { AdminDashboard } from './components/Admin/AdminDashboard';
@@ -30,11 +30,11 @@ import { CmsConfigEditor } from './components/Admin/CmsConfigEditor';
 import { SystemInstallerPage } from './components/Installer/SystemInstallerPage';
 import { SecurityLogs } from './components/Admin/SecurityLogs';
 import { CpanelDeploymentKit } from './components/DeploymentKit/CpanelDeploymentKit';
-import { SimulationBar } from './components/SimulationBar';
 import { UserManagementModal } from './components/Admin/UserManagementModal';
 import { AgencySettingsPage } from './components/Admin/AgencySettingsPage';
 import { LoginPage } from './components/Auth/LoginPage';
 import { baixarVCard } from './utils/security';
+import { detectarRotaPublica, gerarSlugUnico } from './utils/propostaUrl';
 
 export default function App() {
   const [cartaoPerfilAberto, setCartaoPerfilAberto] = useState<Usuario | null>(null);
@@ -118,7 +118,9 @@ export default function App() {
   const [modoAtual, setModoAtual] = useState<ModoVisualizacao>('cliente');
   const [propostaSelecionada, setPropostaSelecionada] = useState<Proposta>(propostas[0]);
   const [propostaEmEdicao, setPropostaEmEdicao] = useState<Proposta | null>(null);
-  const [isAcessoDiretoCliente, setIsAcessoDiretoCliente] = useState<boolean>(false);
+  // Página pública da proposta (/proposta-<slug> ou ?token=...): sem login, sem menus do sistema
+  const [rotaPublica] = useState(detectarRotaPublica);
+  const [statusPublico, setStatusPublico] = useState<'carregando' | 'ok' | 'nao_encontrada'>(rotaPublica ? 'carregando' : 'ok');
   const [darkMode, setDarkMode] = useState<boolean>(() => localStorage.getItem('gc_dark_mode') === 'true');
 
   // Gerenciamento de Autenticação e Instalação
@@ -140,6 +142,7 @@ export default function App() {
 
   // Hidratar dados completos do MySQL sempre que o usuário estiver autenticado ou o sistema estiver pronto
   useEffect(() => {
+    if (rotaPublica) return; // Página pública do cliente não carrega dados administrativos
     if (isLogado || instalado) {
       // 1. Configuração da Agência
       fetch('/api/config')
@@ -210,38 +213,9 @@ export default function App() {
     }
   }, [darkMode]);
 
-  // Checagem de token público de cliente via URL (?token=...) conectado à API do MySQL
+  // Link de cartão de perfil (?perfil=slug)
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const tokenParam = params.get('token');
-    if (tokenParam) {
-      // Tenta buscar diretamente do backend MySQL para garantir dados em tempo real
-      fetch(`/api/proposta/token/${tokenParam}`)
-        .then(res => res.json())
-        .then(propReal => {
-          if (propReal && propReal.id) {
-            setPropostaSelecionada(propReal);
-            setModoAtual('cliente');
-            setIsAcessoDiretoCliente(true);
-          } else {
-            const encontrada = propostas.find(p => p.token === tokenParam);
-            if (encontrada) {
-              setPropostaSelecionada(encontrada);
-              setModoAtual('cliente');
-              setIsAcessoDiretoCliente(true);
-            }
-          }
-        })
-        .catch(() => {
-          const encontrada = propostas.find(p => p.token === tokenParam);
-          if (encontrada) {
-            setPropostaSelecionada(encontrada);
-            setModoAtual('cliente');
-            setIsAcessoDiretoCliente(true);
-          }
-        });
-    }
-
     const perfilParam = params.get('perfil');
     if (perfilParam) {
       const usuarioEncontrado = usuarios.find(
@@ -252,6 +226,58 @@ export default function App() {
       }
     }
   }, [propostas, usuarios]);
+
+  // Carrega a proposta pública pela URL amigável (/proposta-<slug>) ou pelo link legado (?token=)
+  useEffect(() => {
+    if (!rotaPublica) return;
+    const lerJson = async (res: Response) => {
+      const tipo = res.headers.get('content-type') || '';
+      if (!res.ok || !tipo.includes('application/json')) return null;
+      return res.json();
+    };
+
+    // Identidade visual da agência (endpoint público)
+    fetch('/api/config')
+      .then(lerJson)
+      .then(data => {
+        if (data && data.nomeAgencia) {
+          setConfig(prev => ({
+            ...prev,
+            ...data,
+            capa: { ...prev.capa, ...(data.capa || {}) },
+            fundadores: { ...prev.fundadores, ...(data.fundadores || {}) },
+            premiacao: { ...prev.premiacao, ...(data.premiacao || {}) },
+            time: { ...prev.time, ...(data.time || {}) },
+            servicosInstitucionais: data.servicosInstitucionais || prev.servicosInstitucionais,
+            clientesApresentados: data.clientesApresentados || prev.clientesApresentados,
+            secoesOrdem: Array.isArray(data.secoesOrdem) && data.secoesOrdem.length > 0 ? data.secoesOrdem : prev.secoesOrdem,
+          }));
+        }
+      })
+      .catch(() => {});
+
+    const rota = rotaPublica.tipo === 'slug'
+      ? `/api/proposta/slug/${encodeURIComponent(rotaPublica.valor)}`
+      : `/api/proposta/token/${encodeURIComponent(rotaPublica.valor)}`;
+
+    const buscarLocal = () =>
+      propostas.find(p => rotaPublica.tipo === 'slug' ? p.slug === rotaPublica.valor : p.token === rotaPublica.valor);
+
+    fetch(rota)
+      .then(lerJson)
+      .then(prop => prop && prop.id ? prop : buscarLocal())
+      .catch(() => buscarLocal())
+      .then(prop => {
+        if (prop) {
+          setPropostaSelecionada(prop);
+          setStatusPublico('ok');
+          document.title = `${prop.titulo} • ${prop.clienteEmpresa}`;
+        } else {
+          setStatusPublico('nao_encontrada');
+        }
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rotaPublica]);
 
   // Persistência local (cache)
   useEffect(() => { localStorage.setItem('gc_usuarios', JSON.stringify(usuarios)); }, [usuarios]);
@@ -363,7 +389,11 @@ export default function App() {
   };
 
   // Operações de Propostas conectadas ao MySQL
-  const handleSalvarProposta = (propostaSalva: Proposta) => {
+  const handleSalvarProposta = (propostaRecebida: Proposta) => {
+    // Garante a URL amigável (/proposta-<slug>) para toda proposta salva
+    const propostaSalva: Proposta = propostaRecebida.slug
+      ? propostaRecebida
+      : { ...propostaRecebida, slug: gerarSlugUnico(propostaRecebida.clienteEmpresa || propostaRecebida.clienteNome, propostas, propostaRecebida.id) };
     const existe = propostas.some(p => p.id === propostaSalva.id);
     let novas: Proposta[];
     if (existe) {
@@ -426,9 +456,21 @@ export default function App() {
     }).catch(err => console.error('Erro ao excluir proposta no MySQL:', err));
   };
 
-  const handleVisualizarComoCliente = (proposta: Proposta) => {
-    setPropostaSelecionada(proposta);
-    setModoAtual('cliente');
+  // Propostas antigas (sem slug) recebem a URL amigável na primeira vez que forem compartilhadas
+  const handleGarantirSlug = (proposta: Proposta): Proposta => {
+    if (proposta.slug) return proposta;
+    const atualizada: Proposta = {
+      ...proposta,
+      slug: gerarSlugUnico(proposta.clienteEmpresa || proposta.clienteNome, propostas, proposta.id),
+    };
+    setPropostas(prev => prev.map(p => (p.id === atualizada.id ? atualizada : p)));
+    if (propostaSelecionada?.id === atualizada.id) setPropostaSelecionada(atualizada);
+    fetch('/api/propostas', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(atualizada)
+    }).catch(err => console.error('Erro ao salvar URL da proposta no MySQL:', err));
+    return atualizada;
   };
 
   const handleAceitarProposta = (nomeResponsavel: string, documento: string) => {
@@ -508,7 +550,49 @@ export default function App() {
     }
   };
 
-  const esconderBarrasSistema = isAcessoDiretoCliente && modoAtual === 'cliente';
+  const botaoTema = (
+    <button
+      type="button"
+      onClick={() => setDarkMode(!darkMode)}
+      className="p-2 rounded-full border border-zinc-200 dark:border-zinc-700 bg-white/90 dark:bg-zinc-900/90 text-zinc-700 dark:text-zinc-200 shadow-md hover:scale-105 transition-transform backdrop-blur-sm"
+      title={darkMode ? 'Ativar modo claro' : 'Ativar modo escuro'}
+      aria-label={darkMode ? 'Ativar modo claro' : 'Ativar modo escuro'}
+    >
+      {darkMode ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+    </button>
+  );
+
+  // PÁGINA PÚBLICA DO CLIENTE: sem login, sem menu, sem barras do sistema
+  if (rotaPublica) {
+    return (
+      <div className="min-h-screen bg-zinc-50 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 font-sans transition-colors duration-200">
+        {statusPublico === 'carregando' && (
+          <div className="min-h-screen flex flex-col items-center justify-center gap-3 text-sm text-zinc-500">
+            <Loader2 className="w-6 h-6 animate-spin text-purple-600" />
+            Carregando proposta...
+          </div>
+        )}
+        {statusPublico === 'nao_encontrada' && (
+          <div className="min-h-screen flex flex-col items-center justify-center gap-3 p-6 text-center">
+            <div className="fixed top-3 right-4 z-50">{botaoTema}</div>
+            <FileX className="w-10 h-10 text-zinc-400" />
+            <h1 className="text-xl font-bold">Proposta não encontrada</h1>
+            <p className="text-sm text-zinc-500 max-w-sm">
+              O link pode estar incorreto ou a proposta foi removida. Entre em contato com {config.nomeAgencia || 'a agência'} para receber um novo link.
+            </p>
+          </div>
+        )}
+        {statusPublico === 'ok' && (
+          <ClientProposalView
+            proposta={propostaSelecionada}
+            config={config}
+            onAceitarProposta={handleAceitarProposta}
+            acaoTopoDireita={botaoTema}
+          />
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-zinc-50 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 flex flex-col font-sans transition-colors duration-200">
@@ -522,8 +606,8 @@ export default function App() {
           onResetarInstalacaoParaTestes={handleResetarInstalacao}
           onIrParaPainel={() => setModoAtual('admin')}
         />
-      ) : !isLogado && !isAcessoDiretoCliente ? (
-        /* 2. SE NÃO ESTIVER LOGADO (E NÃO FOR CLIENTE COM TOKEN): TELA DE LOGIN OBRIGATÓRIA */
+      ) : !isLogado ? (
+        /* 2. SE NÃO ESTIVER LOGADO: TELA DE LOGIN OBRIGATÓRIA */
         <LoginPage
           onLogin={handleLogin}
           onResetarInstalacao={handleResetarInstalacao}
@@ -532,7 +616,7 @@ export default function App() {
         /* 3. SISTEMA PRINCIPAL (ADMINISTRATIVO OU PORTAL DO CLIENTE) */
         <>
           {/* BARRA SUPERIOR DE NAVEGAÇÃO */}
-          {!esconderBarrasSistema && (
+          {isLogado && (
             <Navbar
               modoAtual={modoAtual}
               setModoAtual={setModoAtual}
@@ -554,11 +638,7 @@ export default function App() {
               <ClientProposalView
                 proposta={propostaSelecionada}
                 config={config}
-                onVoltarParaPainel={() => {
-                  setIsAcessoDiretoCliente(false);
-                  setModoAtual('admin');
-                }}
-                onSimularAtivacao={() => {}}
+                onVoltarParaPainel={() => setModoAtual('admin')}
                 onAceitarProposta={handleAceitarProposta}
               />
             )}
@@ -578,7 +658,7 @@ export default function App() {
                   }}
                   onAlternarStatus={handleAlternarStatus}
                   onExcluirProposta={handleExcluirProposta}
-                  onVisualizarComoCliente={handleVisualizarComoCliente}
+                  onGarantirSlug={handleGarantirSlug}
                   onRegistrarEnvioEmail={handleRegistrarEnvioEmail}
                   onAbrirGerenciadorUsuarios={() => setUserModalAberto(true)}
                 />
@@ -593,6 +673,7 @@ export default function App() {
                 usuarioAtual={usuarioAtual}
                 onSalvar={handleSalvarProposta}
                 onVoltar={() => setModoAtual('admin')}
+                propostasExistentes={propostas}
               />
             )}
 
@@ -604,6 +685,7 @@ export default function App() {
                 usuarioAtual={usuarioAtual}
                 onSalvar={handleSalvarProposta}
                 onVoltar={() => setModoAtual('admin')}
+                propostasExistentes={propostas}
               />
             )}
 
@@ -658,18 +740,6 @@ export default function App() {
 
           </div>
 
-          {/* BARRA DE TESTES & CONTROLE (ADMIN) */}
-          {isLogado && !esconderBarrasSistema && (
-            <SimulationBar
-              propostaAtual={propostaSelecionada}
-              onSelecionarPorStatus={() => {}}
-              onExpirarImediatamente={() => {}}
-              onRenovarValidade={() => {}}
-              usuarioAtual={usuarioAtual}
-              usuarios={usuarios}
-              onTrocarUsuario={u => setUsuarioAtual(u)}
-            />
-          )}
         </>
       )}
 
